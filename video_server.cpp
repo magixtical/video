@@ -1,4 +1,5 @@
-﻿#include "config.h"
+﻿/*
+#include "config.h"
 #include "hls_generator.h"
 #include "HttpServer.h"
 #include <iostream>
@@ -70,5 +71,109 @@ int main() {
     }
 
     std::cout << "Server stopped successfully." << std::endl;
+    return 0;
+}
+*/
+
+// main.cpp
+#include "screen_recorder.h"
+#include <iostream>
+#include <conio.h>
+#include <signal.h>
+
+std::unique_ptr<ScreenRecorder> recorder;
+
+void signalHandler(int signal) {
+    std::cout << "\nReceived signal " << signal << ", stopping recorder..." << std::endl;
+    if (recorder) {
+        recorder->stop();
+    }
+    exit(0);
+}
+
+int main() {
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
+    
+    try {
+        RecordConfig config;
+        
+        // 捕获配置
+        config.capture_config.capture_full_screen = true;
+        config.capture_config.frame_rate = 30;
+        config.capture_config.target_width = 1280;
+        config.capture_config.target_height = 800;
+        config.capture_config.maintain_aspect_ratio = true;
+        
+        // 编码配置
+        config.encoder_config.width = 1280;
+        config.encoder_config.height = 800;
+        config.encoder_config.frame_rate = 30;
+        config.encoder_config.video_bitrate = 4000000; // 8 Mbps for recording
+        config.encoder_config.video_codec_name = "libx264";
+        config.encoder_config.preset = "medium";
+        config.encoder_config.max_b_frames = 0;  // FLV 通常不支持 B-frames
+        config.encoder_config.pixel_format = AV_PIX_FMT_YUV420P;  // FLV 标准格式
+        
+        // 输出配置
+        config.record_to_file = true;
+        config.output_directory="recording";
+        config.output_filename = "screen_record.mp4";
+        
+        config.stream_to_rtmp = true;
+        config.rtmp_url = "rtmp://localhost/live/livestream";
+        
+        recorder = std::make_unique<ScreenRecorder>();
+        
+        if (recorder->initialize(config)) {
+            std::cout << "Screen recorder initialized successfully" << std::endl;
+            std::cout << "Press 's' to start, 'q' to stop, 'x' to exit" << std::endl;
+            
+            bool started = false;
+            
+            while (true) {
+                if (_kbhit()) {
+                    char ch = _getch();
+                    
+                    switch (ch) {
+                        case 's':
+                        case 'S':
+                            if (!started && recorder->start()) {
+                                started = true;
+                                std::cout << "Recording and streaming started!" << std::endl;
+                            }
+                            break;
+                            
+                        case 'q':
+                        case 'Q':
+                            if (started) {
+                                recorder->stop();
+                                started = false;
+                                std::cout << "Recording and streaming stopped" << std::endl;
+                            }
+                            break;
+                            
+                        case 'x':
+                        case 'X':
+                            std::cout << "Exiting..." << std::endl;
+                            if (started) {
+                                recorder->stop();
+                            }
+                            return 0;
+                    }
+                }
+                
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        } else {
+            std::cerr << "Failed to initialize screen recorder" << std::endl;
+            return 1;
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
+    
     return 0;
 }
