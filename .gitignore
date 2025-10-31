@@ -5,7 +5,7 @@ x64/
 output/
 video_server/
 
-
+recording/
 hls_stream/
 temp/
 
@@ -26,6 +26,7 @@ local_video.mp4
 *.lib
 *.exp
 *.log
+*.mp4
 
 .DS_Store
 Thumbs.db
