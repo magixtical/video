@@ -1,4 +1,4 @@
-# HLS Streaming Server
+# My HLS Streaming Server
 
 一个基于FFmpeg和Boost.Asio的HLS流媒体服务器，可将本地视频文件转换为HLS流并通过HTTP提供访问。
 
@@ -9,7 +9,7 @@
 - 支持配置切片时长、码率、端口等参数
 
 ## 依赖项
-- FFmpeg（libavcodec、libavformat等）
+- FFmpeg（openH264）
 - Boost.Asio（用于HTTP服务器）
 - C++17及以上编译器
 
