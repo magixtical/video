@@ -28,7 +28,7 @@ struct EncoderConfig{
     std::string tune="zerolatency";
 
     //audio parameters
-    int sample_rate=44100;
+    int sample_rate=48000;
     int channels=2;
     AVChannelLayout channel_layout=AV_CHANNEL_LAYOUT_STEREO;
     int64_t audio_bitrate=128000;//128kps
@@ -48,24 +48,38 @@ public:
     ~MultiEncoder();
     
     bool initialize(const EncoderConfig& config);
+    bool initializeAudio(const EncoderConfig& config);
     bool encodeFrame(AVFrame* frame);
+    bool encodeAudioFrame(AVFrame* frame);
     bool flush();
     bool reinitialize();
-    void reset() { frame_count_ = 0; }
+    void reset() { frame_count_ = 0; audio_frame_count_ = 0; }
+    void resetAudio() { audio_frame_count_=0;audio_samples_encoded_ = 0; }
 
     
     void addPacketCallback(PacketCallback callback);
+    void addAudioPacketCallback(PacketCallback callback);
     AVCodecContext* getCodecContext() const { return codec_ctx_; }
+    AVCodecContext* getAudioCodecContext() const { return audio_codec_ctx_; }
     const EncoderConfig& getConfig() const { return config_; }
+
     
 private:
     
     AVCodecContext* codec_ctx_ = nullptr;
+    AVCodecContext* audio_codec_ctx_ = nullptr;
     const AVCodec* codec_ = nullptr;
+    const AVCodec* audio_codec_ = nullptr;
+    SwsContext* sws_ctx_ = nullptr;
+    SwrContext* swr_ctx_ = nullptr;
     EncoderConfig config_;
     
     std::vector<PacketCallback> packet_callbacks_;
+    std::vector<PacketCallback> audio_packet_callbacks_;
     std::mutex callback_mutex_;
+    std::mutex audio_callback_mutex_;
     
     int64_t frame_count_ = 0;
+    int64_t audio_frame_count_ = 0;
+    int64_t audio_samples_encoded_ = 0;
 };

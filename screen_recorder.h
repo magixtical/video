@@ -1,5 +1,6 @@
 #pragma once
 #include"dxgi_capture.h"
+#include"audio_capture.h"
 #include"encoder.h"
 #include"output_manager.h"
 #include<mutex>
@@ -32,17 +33,23 @@ class ScreenRecorder{
     bool is_streaming()const {return streaming_;}
     
     private:
+
     void capture_loop();
+    void audio_capture_loop();
     void encode_loop();
+    void audio_encode_loop();
     bool convertToAVFrame(const VideoFrame&src,AVFrame* dst);
+    bool convertToAudioFrame(const uint8_t* audio_data,size_t data_size,AVFrame* frame);
 
     std::string output_path_;
     std::string getFilename(const std::string& original_filename);
 
     RecordConfig config_;
     std::unique_ptr<DXGICapture> capture_;
+    std::unique_ptr<AudioCapture> audio_capture_;
 
     std::shared_ptr<MultiEncoder> encoder_;
+    std::shared_ptr<MultiEncoder> audio_encoder_;
     OutputManager output_manager_;
 
     std::atomic<bool> recording_{false};
@@ -50,13 +57,26 @@ class ScreenRecorder{
     std::atomic<bool> running_{false};
 
     std::thread capture_thread_;
+    std::thread audio_capture_thread_;
     std::thread encode_thread_;
+    std::thread audio_encode_thread_;
 
     std::queue<VideoFrame> frame_queue_;
+    std::queue<std::vector<uint8_t>> audio_queue_;
     std::mutex frame_mutex_;
+    std::mutex audio_mutex_;
     std::condition_variable frame_cv_;
+    std::condition_variable audio_cv_;
     static const int MAX_QUEUE_SIZE = 10;
+    static const int AUDIO_QUEUE_SIZE=30;
 
     AVFrame* av_frame_ = nullptr;
+    AVFrame* audio_frame_=nullptr;
     int64_t frame_count_ = 0;
+    int64_t audio_frame_count_=0;
+    int64_t audio_sample_accumulated_=0;
+
+    std::vector<uint8_t> audio_buffer_;
+    const size_t AUDIO_BUFFER_SIZE=1024*8;
+
 };

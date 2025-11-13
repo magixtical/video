@@ -17,6 +17,7 @@ class OutputManager {
     bool initializeStreamOutput(const std::string& rtmp_url,const EncoderConfig& config);
 
     void setEncoder(std::shared_ptr<MultiEncoder> encoder);
+    void setAudioEncoder(std::shared_ptr<MultiEncoder> encoder);
 
     bool start();
     void stop();
@@ -26,25 +27,33 @@ class OutputManager {
 
     private:
     void onEncodedPacket(AVPacket* packet);
+    void onAudioEncodedPacket(AVPacket* packet);
     bool setupFileOutput();
     bool setupStreamOutput();
     bool writePacket(AVPacket* packet,AVFormatContext* fmt_ctx_,AVStream* stream);
+    bool writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx_,AVStream* stream);
+    
     bool testRTMPConnection(const std::string& url);
 
     std::shared_ptr<MultiEncoder> encoder_;
+    std::shared_ptr<MultiEncoder> audio_encoder_;
     // 文件输出
     AVFormatContext* file_fmt_ctx_ = nullptr;
-    AVStream* file_stream_ = nullptr;
+    AVStream* file_video_stream_ = nullptr;
+    AVStream* file_audio_stream_ = nullptr;
     std::string filename_;
     std::atomic<bool> recording_{false};
     
     // 流输出
     AVFormatContext* stream_fmt_ctx_ = nullptr;
-    AVStream* stream_stream_ = nullptr;
+    AVStream* stream_video_stream_ = nullptr;
+    AVStream* stream_audio_stream_ = nullptr;
     std::string rtmp_url_;
     std::atomic<bool> streaming_{false};
     
     EncoderConfig config_;
     int64_t start_time_ = 0;
-    int64_t pts_counter_= 0;
+    int64_t video_pts_counter_= 0;
+    int64_t audio_pts_counter_= 0;
+    int64_t audio_samples_written_=0;
 };

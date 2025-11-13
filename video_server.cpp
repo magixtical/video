@@ -114,19 +114,24 @@ int main() {
         config.encoder_config.preset = "medium";
         config.encoder_config.max_b_frames = 0;  // FLV 通常不支持 B-frames
         config.encoder_config.pixel_format = AV_PIX_FMT_YUV420P;  // FLV 标准格式
+        config.encoder_config.audio_bitrate = 128000; // 128kbps
+        config.encoder_config.sample_rate = 48000;
+        config.encoder_config.channels = 2;
+        config.encoder_config.channel_layout = AV_CHANNEL_LAYOUT_STEREO;
+        config.encoder_config.sample_format = AV_SAMPLE_FMT_FLTP;
+        config.encoder_config.audio_codec_name = "aac";
         
         // 输出配置
         config.record_to_file = true;
         config.output_directory="recording";
         config.output_filename = "screen_record.mp4";
         
-        config.stream_to_rtmp = true;
+        config.stream_to_rtmp = false;
         config.rtmp_url = "rtmp://localhost/live/livestream";
         
         recorder = std::make_unique<ScreenRecorder>();
         
         if (recorder->initialize(config)) {
-            std::cout << "Screen recorder initialized successfully" << std::endl;
             std::cout << "Press 's' to start, 'q' to stop, 'x' to exit" << std::endl;
             
             bool started = false;
