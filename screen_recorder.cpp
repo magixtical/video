@@ -2,6 +2,8 @@
 #include<iostream>
 #include<chrono>
 #include<filesystem>
+#include<iomanip>
+#include<sstream>
 
 ScreenRecorder::ScreenRecorder()=default;
 ScreenRecorder::~ScreenRecorder(){
@@ -9,53 +11,99 @@ ScreenRecorder::~ScreenRecorder(){
     if(av_frame_){
         av_frame_free(&av_frame_);
     }
+    if(audio_frame_){
+        av_frame_free(&audio_frame_);
+    }
 }
 
 bool ScreenRecorder::initialize(const RecordConfig& config) {
     config_ = config;
 
     try {
-        // 初始化编码器
-        encoder_ = std::make_shared<MultiEncoder>();
+        // 初始化视频编码器
+        encoder_ = std::make_shared<Encoder>();
         if (!encoder_->initialize(config.encoder_config)) {
             std::cerr << "Failed to initialize encoder" << std::endl;
             return false;
         }
 
+        // 初始化音频编码器和捕获
+        audio_encoder_ = std::make_shared<Encoder>();
         bool audio_initialized = false;
-        audio_encoder_=std::make_shared<MultiEncoder>();
 
         if(audio_encoder_->initializeAudio(config.encoder_config)){
             audio_capture_ = std::make_unique<AudioCapture>();
             if(audio_capture_->initialize(config.encoder_config.sample_rate, config.encoder_config.channels)){
-                audio_capture_->setAudioCallback([this](const std::vector<uint8_t>& data, int samples, int64_t timestamp){
+                // 设置音频回调，处理时间间隔
+                audio_capture_->setAudioCallback([this](const AudioCapture::AudioPacket& packet){
                     std::unique_lock<std::mutex> lock(audio_mutex_);
-                    if(audio_queue_.size() >= AUDIO_QUEUE_SIZE){
-                        audio_queue_.pop();
+                    
+                    int64_t current_timestamp = packet.timestamp;
+                    int64_t last_timestamp = last_audio_timestamp_.load();
+                    
+                    // 如果不是第一个包，检查时间间隔
+                    if (last_timestamp > 0) {
+                        int64_t gap = current_timestamp - (last_timestamp + packet.duration_ms);
+                        
+                        if (gap > audio_gap_threshold_) {
+                            std::cout << "Audio gap detected: " << gap << "ms, inserting silence..." << std::endl;
+                            
+                            // 生成静音数据
+                            std::vector<uint8_t> silence_data;
+                            if (generateSilenceFrame(silence_data, gap)) {
+                                // 将静音数据加入队列
+                                if(audio_queue_.size() >= AUDIO_QUEUE_SIZE){
+                                    audio_queue_.pop_front();
+                                }
+                                audio_queue_.push_back(silence_data);
+                            }
+                        }
                     }
-                    audio_queue_.push(data);
+                    
+                    // 将实际音频数据加入队列
+                    if(audio_queue_.size() >= AUDIO_QUEUE_SIZE){
+                        audio_queue_.pop_front();
+                    }
+                    
+                    // 如果包是静音的，也标记一下
+                    if (packet.is_silence) {
+                        // 对于静音包，我们可以直接处理，或者也加入队列
+                        std::cout << "Received silence packet: " << packet.duration_ms << "ms" << std::endl;
+                    }
+                    
+                    audio_queue_.push_back(packet.data);
+                    
+                    // 更新最后时间戳
+                    last_audio_timestamp_ = current_timestamp + packet.duration_ms;
+                    
                     audio_cv_.notify_one();
                 });
 
+                // 初始化音频帧
                 auto* audio_codec_ctx = audio_encoder_->getAudioCodecContext();
-                audio_frame_ = av_frame_alloc();
-                audio_frame_->format = audio_codec_ctx->sample_fmt;
-                audio_frame_->ch_layout = audio_codec_ctx->ch_layout;
-                audio_frame_->sample_rate = audio_codec_ctx->sample_rate;
-                audio_frame_->nb_samples = audio_codec_ctx->frame_size;
+                if (audio_codec_ctx) {
+                    audio_frame_ = av_frame_alloc();
+                    audio_frame_->format = audio_codec_ctx->sample_fmt;
+                    audio_frame_->ch_layout = audio_codec_ctx->ch_layout;
+                    audio_frame_->sample_rate = audio_codec_ctx->sample_rate;
+                    audio_frame_->nb_samples = audio_codec_ctx->frame_size;
 
-                int ret = av_frame_get_buffer(audio_frame_, 0);
-                if(ret >= 0){
-                    audio_initialized = true;
-                    std::cout << "Audio system initialized successfully" << std::endl;
-                } else {
-                    std::cerr << "Failed to allocate audio frame buffer" << std::endl;
+                    int ret = av_frame_get_buffer(audio_frame_, 0);
+                    if(ret >= 0){
+                        audio_initialized = true;
+                        std::cout << "Audio system initialized successfully" << std::endl;
+                        std::cout << "  Frame size: " << audio_frame_->nb_samples << " samples" << std::endl;
+                        std::cout << "  Sample rate: " << audio_frame_->sample_rate << "Hz" << std::endl;
+                    } else {
+                        std::cerr << "Failed to allocate audio frame buffer" << std::endl;
+                    }
                 }
             } else {
                 std::cerr << "Failed to initialize audio capture - continuing without audio" << std::endl;
             }
-            output_manager_.setAudioEncoder(audio_encoder_);
             
+            // 设置音频编码器到输出管理器
+            output_manager_.setAudioEncoder(audio_encoder_);
         } else {
             std::cerr << "Failed to initialize audio encoder - continuing without audio" << std::endl;
         }
@@ -69,7 +117,7 @@ bool ScreenRecorder::initialize(const RecordConfig& config) {
             }
         }
 
-
+        // 初始化输出
         if (config.stream_to_rtmp) {
             if (!output_manager_.initializeStreamOutput(config.rtmp_url, config.encoder_config)) {
                 std::cerr << "Failed to initialize stream output" << std::endl;
@@ -79,7 +127,7 @@ bool ScreenRecorder::initialize(const RecordConfig& config) {
 
         output_manager_.setEncoder(encoder_);
 
-        // 初始化捕获
+        // 初始化视频捕获
         capture_ = std::make_unique<DXGICapture>(config.capture_config);
         capture_->set_frame_callback([this](const VideoFrame& frame) {
             std::cout << "Capture callback: received frame " << frame.width << "x" << frame.height
@@ -92,7 +140,6 @@ bool ScreenRecorder::initialize(const RecordConfig& config) {
                 return;
             }
 
-            // 如果队列已满，丢弃最老的帧
             if (frame_queue_.size() >= MAX_QUEUE_SIZE) {
                 std::cout << "Capture callback: queue full, dropping oldest frame" << std::endl;
                 frame_queue_.pop();
@@ -101,9 +148,9 @@ bool ScreenRecorder::initialize(const RecordConfig& config) {
             frame_queue_.push(frame);
             std::cout << "Capture callback: queued frame, queue size: " << frame_queue_.size() << std::endl;
             frame_cv_.notify_one();
-            });
+        });
 
-        // 初始化AVFrame
+        // 初始化视频AVFrame
         auto* codec_ctx = encoder_->getCodecContext();
         av_frame_ = av_frame_alloc();
         av_frame_->width = codec_ctx->width;
@@ -126,7 +173,6 @@ bool ScreenRecorder::initialize(const RecordConfig& config) {
     }
 }
 
-
 bool ScreenRecorder::start(){
     if(running_){
         return true;
@@ -134,14 +180,29 @@ bool ScreenRecorder::start(){
     
     std::cout<<"Starting screen recorder..."<<std::endl;
 
+    // 重置所有状态
     output_manager_.reset();
+    
+    // 重置音频时间跟踪
+    last_audio_timestamp_ = 0;
+    expected_next_timestamp_ = 0;
+    audio_sample_accumulated_ = 0;
+    
+    // 清理队列
+    {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        audio_queue_.clear();
+    }
+    audio_buffer_.clear();
 
+    // 重新初始化音频捕获
     if (audio_capture_ && !audio_capture_->reinitialize()) {
         std::cerr << "Failed to reinitialize audio capture - continuing without audio" << std::endl;
         audio_capture_.reset();
         audio_encoder_.reset();
     }
 
+    // 重新初始化编码器
     if (encoder_) {
         if (!encoder_->reinitialize()) {
             std::cerr << "Failed to reinitialize encoder" << std::endl;
@@ -150,12 +211,14 @@ bool ScreenRecorder::start(){
         std::cout << "Encoder reinitialized successfully" << std::endl;
     }
 
-    if(audio_encoder_)
+    if(audio_encoder_) {
         audio_encoder_->resetAudio();
+    }
         
     audio_frame_count_ = 0;
-    audio_sample_accumulated_=0;
+    frame_count_ = 0;
 
+    // 设置文件输出
     if (config_.record_to_file) {
         std::string new_output_path_ = getFilename(config_.output_filename);
         if (!config_.output_directory.empty()) {
@@ -163,14 +226,13 @@ bool ScreenRecorder::start(){
             new_output_path_ = config_.output_directory + "/" + new_output_path_;
         }
 
-        // 初始化文件输出
         if (!output_manager_.initializeFileOutput(new_output_path_, config_.encoder_config)) {
             std::cerr << "Failed to initialize file output in start()" << std::endl;
             return false;
         }
     }
 
-    // 重新初始化流输出（如果需要推流）
+    // 设置流输出
     if (config_.stream_to_rtmp) {
         if (!output_manager_.initializeStreamOutput(config_.rtmp_url, config_.encoder_config)) {
             std::cerr << "Failed to re-initialize stream output" << std::endl;
@@ -187,17 +249,19 @@ bool ScreenRecorder::start(){
         return false;
     }
 
-    frame_count_ = 0;
-
+    // 启动所有线程
     running_ = true;
     recording_ = config_.record_to_file;
     streaming_ = config_.stream_to_rtmp;
 
     capture_thread_ = std::thread(&ScreenRecorder::capture_loop, this);
-    audio_capture_thread_ = std::thread(&ScreenRecorder::audio_capture_loop, this);
+    if (audio_capture_) {
+        audio_capture_thread_ = std::thread(&ScreenRecorder::audio_capture_loop, this);
+    }
     encode_thread_ = std::thread(&ScreenRecorder::encode_loop, this);
-    audio_encode_thread_ = std::thread(&ScreenRecorder::audio_encode_loop, this);
-    
+    if (audio_encoder_) {
+        audio_encode_thread_ = std::thread(&ScreenRecorder::audio_encode_loop, this);
+    }
 
     std::cout << "Screen recorder started successfully" << std::endl;
     return true;
@@ -209,13 +273,19 @@ void ScreenRecorder::stop(){
     }
     std::cout<<"Stopping screen recorder..."<<std::endl;
 
-    running_=false;
+    running_ = false;
     frame_cv_.notify_all();
     audio_cv_.notify_all();
 
-    audio_capture_->stop();
-    capture_->stop();
+    // 停止捕获
+    if (audio_capture_) {
+        audio_capture_->stop();
+    }
+    if (capture_) {
+        capture_->stop();
+    }
 
+    // 等待线程结束
     if(capture_thread_.joinable())
         capture_thread_.join();
 
@@ -228,16 +298,47 @@ void ScreenRecorder::stop(){
     if(audio_encode_thread_.joinable())
         audio_encode_thread_.join();
 
+    // 处理剩余的音频数据
+    if (audio_encoder_ && audio_frame_ && !audio_buffer_.empty()) {
+        std::cout << "Encoding remaining audio data: " << audio_buffer_.size() << " bytes" << std::endl;
+        
+        auto* audio_codec_ctx = audio_encoder_->getAudioCodecContext();
+        int bytes_per_frame = audio_frame_->nb_samples * 2 * sizeof(float);
+        
+        // 如果缓冲区有数据但不够一帧，用静音填充
+        if (audio_buffer_.size() < bytes_per_frame) {
+            size_t silence_needed = bytes_per_frame - audio_buffer_.size();
+            audio_buffer_.insert(audio_buffer_.end(), silence_needed, 0);
+            std::cout << "Added " << silence_needed << " bytes of silence to complete frame" << std::endl;
+        }
+        
+        // 编码最后一帧
+        if (convertToAudioFrame(audio_buffer_.data(), bytes_per_frame, audio_frame_)) {
+            audio_encoder_->encodeAudioFrame(audio_frame_);
+        }
+    }
+
+    // 刷新编码器
     if(encoder_)
         encoder_->flush();
 
     if(audio_encoder_)
         audio_encoder_->flush();
 
+    // 停止输出管理器
     output_manager_.stop();
 
-    recording_=false;
-    streaming_=false;
+    // 重置状态
+    recording_ = false;
+    streaming_ = false;
+    
+    // 清理缓冲区
+    audio_buffer_.clear();
+    {
+        std::lock_guard<std::mutex> lock(audio_mutex_);
+        audio_queue_.clear();
+    }
+    
     std::cout<<"Screen recorder stopped successfully"<<std::endl;
 }
 
@@ -299,51 +400,88 @@ void ScreenRecorder::encode_loop(){
 void ScreenRecorder::audio_encode_loop(){
     std::cout<<"Audio encode thread started"<<std::endl;
 
-    int encode_count=0;
-    const int samples_per_frame=audio_encoder_->getAudioCodecContext()->frame_size;
-    const int bytes_per_frame=samples_per_frame*2*sizeof(float);
+    if (!audio_encoder_ || !audio_frame_) {
+        std::cerr << "Audio encoder or frame not initialized" << std::endl;
+        return;
+    }
 
-    std::cout << "Audio encode: samples_per_frame=" << samples_per_frame 
-              << ", bytes_per_frame=" << bytes_per_frame << std::endl;
+    auto* audio_codec_ctx = audio_encoder_->getAudioCodecContext();
+    const int samples_per_frame = audio_codec_ctx->frame_size;
+    const int bytes_per_frame = samples_per_frame * 2 * sizeof(float);
+    const int frame_duration_ms = (samples_per_frame * 1000) / audio_codec_ctx->sample_rate;
+
+    std::cout << "Audio encode config:" << std::endl;
+    std::cout << "  Samples per frame: " << samples_per_frame << std::endl;
+    std::cout << "  Bytes per frame: " << bytes_per_frame << std::endl;
+    std::cout << "  Frame duration: " << frame_duration_ms << "ms" << std::endl;
+
+    // 用于生成静音帧的计时器
+    auto last_silence_time = std::chrono::steady_clock::now();
+    int silence_frame_count = 0;
 
     while(running_){
         std::vector<uint8_t> audio_data;
+        bool has_data = false;
+        
         {
-            std::unique_lock<std::mutex>lock(audio_mutex_);
+            std::unique_lock<std::mutex> lock(audio_mutex_);
             if (audio_cv_.wait_for(lock, std::chrono::milliseconds(10), [this]() {
                 return !audio_queue_.empty() || !running_;
-                })) {
-
+            })) {
                 if (!running_)
                     break;
-                if (audio_queue_.empty())
-                    continue;
-
-                audio_data = audio_queue_.front();
-                audio_queue_.pop();
-            }
-            else {
-                continue;
+                if (!audio_queue_.empty()) {
+                    audio_data = audio_queue_.front();
+                    audio_queue_.pop_front();
+                    has_data = true;
+                }
             }
         }
+        
         if (!running_)
             break;
 
-        if(!audio_data.empty()){
+        if (has_data && !audio_data.empty()) {
             audio_buffer_.insert(audio_buffer_.end(), audio_data.begin(), audio_data.end());
-            std::cout<<"Audio buffer size: "<<audio_buffer_.size()<<std::endl;
+            std::cout << "Audio buffer size after adding data: " << audio_buffer_.size() 
+                      << " (needs " << bytes_per_frame << " for a frame)" << std::endl;
+        } else {
+            // 没有数据，检查是否需要生成静音
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_silence_time).count();
+            
+            if (elapsed > frame_duration_ms * 2) { // 如果超过两帧时间没有数据
+                std::cout << "No audio data for " << elapsed << "ms, generating silence..." << std::endl;
+                
+                // 生成一帧静音
+                std::vector<uint8_t> silence(bytes_per_frame, 0);
+                audio_buffer_.insert(audio_buffer_.end(), silence.begin(), silence.end());
+                last_silence_time = now;
+                silence_frame_count++;
+                
+                if (silence_frame_count % 10 == 0) {
+                    std::cout << "Generated " << silence_frame_count << " silence frames" << std::endl;
+                }
+            }
         }
 
+        // 编码完整的音频帧
         while (audio_buffer_.size() >= bytes_per_frame && audio_frame_) {
-            std::cout << "Audio encode: buffer has enough data for one frame" << std::endl;
+            std::cout << "Audio encode: buffer has enough data for encoding ("
+                      << audio_buffer_.size() << " >= " << bytes_per_frame << ")" << std::endl;
             
             if (convertToAudioFrame(audio_buffer_.data(), bytes_per_frame, audio_frame_)) {
-                std::cout << "Audio encode: converted to frame, samples: " << audio_frame_->nb_samples 
-                          << ", pts: " << audio_frame_->pts << std::endl;
+                // 设置时间戳
+                if (audio_frame_->pts == AV_NOPTS_VALUE) {
+                    audio_frame_->pts = audio_sample_accumulated_;
+                    audio_sample_accumulated_ += audio_frame_->nb_samples;
+                }
+                
+                std::cout << "Audio encode: converted to frame, pts: " << audio_frame_->pts 
+                          << ", samples: " << audio_frame_->nb_samples << std::endl;
                 
                 if (audio_encoder_->encodeAudioFrame(audio_frame_)) {
-                    std::cout << "Audio encode: successfully encoded frame #" << encode_count << std::endl;
-                    encode_count++;
+                    std::cout << "Audio encode: successfully encoded frame" << std::endl;
                 } else {
                     std::cerr << "Audio encode: failed to encode frame" << std::endl;
                 }
@@ -356,25 +494,9 @@ void ScreenRecorder::audio_encode_loop(){
             std::cout << "Audio buffer after encoding: " << audio_buffer_.size() << " bytes" << std::endl;
         }
     }
-    /*
-    if(!audio_buffer_.empty()&&audio_frame_){
-        std::cout<<"Flushing remaining buffer data: "<<audio_buffer_.size()<<" bytes"<<std::endl;
-        if(audio_buffer_.size()<AUDIO_BUFFER_SIZE){
-            size_t silence_needed=AUDIO_BUFFER_SIZE-audio_buffer_.size();
-            audio_buffer_.insert(audio_buffer_.end(), silence_needed, 0);
-            std::cout<<"Added "<<silence_needed<<" silence bytes"<<std::endl;
-        }
-        if(convertToAudioFrame(audio_buffer_.data(),AUDIO_BUFFER_SIZE,audio_frame_)){
-            audio_encoder_->encodeAudioFrame(audio_frame_);
-        }
-    }*/
-    if (!audio_buffer_.empty()) {
-        std::cout << "Stopped: discarding " << audio_buffer_.size()
-            << " bytes from audio buffer to ensure A/V sync" << std::endl;
-        audio_buffer_.clear();
-    }
 
-    std::cout << "Audio Encode thread stopped" << std::endl;
+    std::cout << "Audio encode thread stopped" << std::endl;
+    std::cout << "Total silence frames generated: " << silence_frame_count << std::endl;
 }
 
 bool ScreenRecorder::convertToAVFrame(const VideoFrame& src, AVFrame* dst) {
@@ -400,7 +522,6 @@ bool ScreenRecorder::convertToAVFrame(const VideoFrame& src, AVFrame* dst) {
     size_t y_size = src.width * src.height;
     size_t uv_size = y_size / 4;
 
-    // 检查数据大小
     if (src.data.size() < y_size * 3 / 2) {
         std::cerr << "Source data too small: " << src.data.size() << " < " << (y_size * 3 / 2) << std::endl;
         return false;
@@ -427,7 +548,6 @@ bool ScreenRecorder::convertToAVFrame(const VideoFrame& src, AVFrame* dst) {
             src.width / 2);
     }
 
-    // 使用递增的时间戳
     dst->pts = frame_count_++;
     std::cout << "Frame converted successfully, pts: " << dst->pts << std::endl;
 
@@ -497,6 +617,32 @@ bool ScreenRecorder::convertToAudioFrame(const uint8_t* audio_data,size_t data_s
     return true;
 }
 
+bool ScreenRecorder::generateSilenceFrame(std::vector<uint8_t>& buffer, int64_t duration_ms) {
+    if (!audio_encoder_ || duration_ms <= 0) {
+        return false;
+    }
+    
+    auto* audio_codec_ctx = audio_encoder_->getAudioCodecContext();
+    if (!audio_codec_ctx) {
+        return false;
+    }
+    
+    // 计算需要的样本数
+    int samples_needed = (duration_ms * audio_codec_ctx->sample_rate) / 1000;
+    if (samples_needed <= 0) {
+        return false;
+    }
+    
+    // 计算字节数 (2通道 * float)
+    size_t bytes_needed = samples_needed * 2 * sizeof(float);
+    buffer.resize(bytes_needed, 0);
+    
+    std::cout << "Generated " << duration_ms << "ms of silence: " 
+              << samples_needed << " samples, " << bytes_needed << " bytes" << std::endl;
+    
+    return true;
+}
+
 std::string ScreenRecorder::getFilename(const std::string& original_filename){
     auto now=std::chrono::system_clock::now();
     auto time_t=std::chrono::system_clock::to_time_t(now);
@@ -526,4 +672,3 @@ std::string ScreenRecorder::getFilename(const std::string& original_filename){
         return original_filename + "_" + timestamp;
     }
 }
-

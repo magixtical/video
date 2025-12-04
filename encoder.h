@@ -40,12 +40,12 @@ struct EncoderConfig{
     std::vector<std::pair<std::string,std::string>> codec_options;
 };
 
-class MultiEncoder {
+class Encoder {
 public:
     using PacketCallback = std::function<void(AVPacket* packet)>;
     
-    MultiEncoder();
-    ~MultiEncoder();
+    Encoder();
+    ~Encoder();
     
     bool initialize(const EncoderConfig& config);
     bool initializeAudio(const EncoderConfig& config);

@@ -8,6 +8,7 @@
 #include<thread>
 #include<atomic>
 #include<condition_variable>
+#include<deque>
 
 struct RecordConfig{
     CaptureConfig capture_config;
@@ -32,6 +33,9 @@ class ScreenRecorder{
     bool is_running()const {return recording_;}
     bool is_streaming()const {return streaming_;}
     
+    // 新增：音频相关方法
+    void setAudioGapThreshold(int64_t threshold_ms) { audio_gap_threshold_ = threshold_ms; }
+    
     private:
 
     void capture_loop();
@@ -40,7 +44,11 @@ class ScreenRecorder{
     void audio_encode_loop();
     bool convertToAVFrame(const VideoFrame&src,AVFrame* dst);
     bool convertToAudioFrame(const uint8_t* audio_data,size_t data_size,AVFrame* frame);
-
+    
+    // 新增：音频时间处理相关方法
+    void insertSilenceFrames(int64_t gap_ms);
+    bool generateSilenceFrame(std::vector<uint8_t>& buffer, int64_t duration_ms);
+    
     std::string output_path_;
     std::string getFilename(const std::string& original_filename);
 
@@ -48,8 +56,8 @@ class ScreenRecorder{
     std::unique_ptr<DXGICapture> capture_;
     std::unique_ptr<AudioCapture> audio_capture_;
 
-    std::shared_ptr<MultiEncoder> encoder_;
-    std::shared_ptr<MultiEncoder> audio_encoder_;
+    std::shared_ptr<Encoder> encoder_;
+    std::shared_ptr<Encoder> audio_encoder_;
     OutputManager output_manager_;
 
     std::atomic<bool> recording_{false};
@@ -61,22 +69,29 @@ class ScreenRecorder{
     std::thread encode_thread_;
     std::thread audio_encode_thread_;
 
+    // 视频队列
     std::queue<VideoFrame> frame_queue_;
-    std::queue<std::vector<uint8_t>> audio_queue_;
     std::mutex frame_mutex_;
-    std::mutex audio_mutex_;
     std::condition_variable frame_cv_;
-    std::condition_variable audio_cv_;
     static const int MAX_QUEUE_SIZE = 10;
-    static const int AUDIO_QUEUE_SIZE=30;
+    
+    // 音频队列和缓冲区
+    std::deque<std::vector<uint8_t>> audio_queue_;  // 使用deque便于插入
+    std::mutex audio_mutex_;
+    std::condition_variable audio_cv_;
+    static const int AUDIO_QUEUE_SIZE = 30;
+    
+    // 音频时间跟踪
+    std::atomic<int64_t> last_audio_timestamp_{0};      // 上一个音频包的时间戳
+    std::atomic<int64_t> audio_gap_threshold_{50};      // 间隔阈值（毫秒）
+    std::atomic<int64_t> expected_next_timestamp_{0};   // 期望的下一个时间戳
+    std::atomic<int64_t> audio_sample_accumulated_{0};  // 累积的样本数
 
     AVFrame* av_frame_ = nullptr;
-    AVFrame* audio_frame_=nullptr;
+    AVFrame* audio_frame_ = nullptr;
     int64_t frame_count_ = 0;
-    int64_t audio_frame_count_=0;
-    int64_t audio_sample_accumulated_=0;
+    int64_t audio_frame_count_ = 0;
 
     std::vector<uint8_t> audio_buffer_;
-    const size_t AUDIO_BUFFER_SIZE=1024*8;
-
+    const size_t AUDIO_BUFFER_SIZE = 1024 * 8;
 };

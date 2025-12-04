@@ -16,8 +16,8 @@ class OutputManager {
     bool initializeFileOutput(const std::string& filename,const EncoderConfig& config);
     bool initializeStreamOutput(const std::string& rtmp_url,const EncoderConfig& config);
 
-    void setEncoder(std::shared_ptr<MultiEncoder> encoder);
-    void setAudioEncoder(std::shared_ptr<MultiEncoder> encoder);
+    void setEncoder(std::shared_ptr<Encoder> encoder);
+    void setAudioEncoder(std::shared_ptr<Encoder> encoder);
 
     bool start();
     void stop();
@@ -35,8 +35,8 @@ class OutputManager {
     
     bool testRTMPConnection(const std::string& url);
 
-    std::shared_ptr<MultiEncoder> encoder_;
-    std::shared_ptr<MultiEncoder> audio_encoder_;
+    std::shared_ptr<Encoder> encoder_;
+    std::shared_ptr<Encoder> audio_encoder_;
     // 文件输出
     AVFormatContext* file_fmt_ctx_ = nullptr;
     AVStream* file_video_stream_ = nullptr;

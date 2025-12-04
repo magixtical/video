@@ -1,14 +1,14 @@
 #include "encoder.h"
 #include<iostream>
 
-MultiEncoder::MultiEncoder()=default ;
-MultiEncoder::~MultiEncoder(){
+Encoder::Encoder()=default ;
+Encoder::~Encoder(){
     if(codec_ctx_){
         avcodec_free_context(&codec_ctx_);
     }
 }
 
-bool MultiEncoder::initialize(const EncoderConfig& config){
+bool Encoder::initialize(const EncoderConfig& config){
     config_ = config;
     codec_=avcodec_find_encoder_by_name(config_.video_codec_name.c_str());
     if(!codec_)
@@ -49,7 +49,7 @@ bool MultiEncoder::initialize(const EncoderConfig& config){
     return true;
 }
 
-bool MultiEncoder::initializeAudio(const EncoderConfig& config){
+bool Encoder::initializeAudio(const EncoderConfig& config){
     audio_codec_=avcodec_find_encoder_by_name(config_.audio_codec_name.c_str());
     if(!audio_codec_){
         std::cerr<<"Failed to find audio encoder: "<<config_.audio_codec_name<<std::endl;
@@ -134,7 +134,7 @@ bool MultiEncoder::initializeAudio(const EncoderConfig& config){
 }
 
 
-bool MultiEncoder::encodeFrame(AVFrame* frame) {
+bool Encoder::encodeFrame(AVFrame* frame) {
     if (!codec_ctx_ || !frame)
         return false;
     frame->pts = frame_count_++;
@@ -198,7 +198,7 @@ bool MultiEncoder::encodeFrame(AVFrame* frame) {
     return success;
 }
 
-bool MultiEncoder::encodeAudioFrame(AVFrame* frame) {
+bool Encoder::encodeAudioFrame(AVFrame* frame) {
     if(!audio_codec_ctx_ || !frame)
         return false;
     frame->pts=audio_samples_encoded_;
@@ -260,7 +260,7 @@ bool MultiEncoder::encodeAudioFrame(AVFrame* frame) {
 }
 
 
-bool MultiEncoder::flush() {
+bool Encoder::flush() {
     if (!codec_ctx_) return false;
     
     int ret = avcodec_send_frame(codec_ctx_, nullptr);
@@ -289,7 +289,7 @@ bool MultiEncoder::flush() {
     return success;
 }
 
-bool MultiEncoder::reinitialize() {
+bool Encoder::reinitialize() {
     if (codec_ctx_) {
         avcodec_free_context(&codec_ctx_);
         codec_ctx_ = nullptr;
@@ -305,12 +305,12 @@ bool MultiEncoder::reinitialize() {
     return initialize(config_)&&initializeAudio(config_);
 }
 
-void MultiEncoder::addPacketCallback(PacketCallback callback) {
+void Encoder::addPacketCallback(PacketCallback callback) {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     packet_callbacks_.push_back(callback);
 }
 
-void MultiEncoder::addAudioPacketCallback(PacketCallback callback) {
+void Encoder::addAudioPacketCallback(PacketCallback callback) {
     std::lock_guard<std::mutex> lock(audio_callback_mutex_);
     audio_packet_callbacks_.push_back(callback);
 }

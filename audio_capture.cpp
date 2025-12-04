@@ -1,6 +1,7 @@
-#include"audio_capture.h"
+#include "audio_capture.h"
 #include <iostream>
 #include <avrt.h>
+#include <algorithm>
 #pragma comment(lib,"avrt.lib")
 #pragma comment(lib,"ole32.lib")
 
@@ -65,14 +66,6 @@ bool AudioCapture::setupAudioClient() {
     if (FAILED(hr)) {
         std::cerr<<"Failed to activate Audio Device: "<<std::hex<<hr<<std::endl;
         return false;
-    }
-
-    // 获取设备信息
-    LPWSTR device_id = nullptr;
-    hr = audio_device_->GetId(&device_id);
-    if (SUCCEEDED(hr)) {
-        std::wcout << L"Audio device ID: " << device_id << std::endl;
-        CoTaskMemFree(device_id);
     }
 
     WAVEFORMATEX* mix_format = nullptr;
@@ -159,15 +152,17 @@ void AudioCapture::captureThread() {
     HANDLE task_handle = nullptr;
     DWORD task_index = 0;
     
-    // Set thread priority for audio capture
+    // 设置线程优先级
     task_handle = AvSetMmThreadCharacteristics(L"Audio", &task_index);
     
-    const UINT32 buffer_duration = 100000; // 100ms buffer
     UINT32 packet_size = 0;
     audio_client_->GetBufferSize(&packet_size);
-    std::cout<<"Audio capture thread start,buffer size: "<<packet_size<<std::endl;
+    std::cout<<"Audio capture thread started, buffer size: "<<packet_size<<std::endl;
     
-    int capture_count=0;
+    int capture_count = 0;
+    // 记录上一次捕获的时间，用于检测间隔
+    int64_t last_capture_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 
     while (capturing_) {
         UINT32 next_packet_size;
@@ -195,42 +190,47 @@ void AudioCapture::captureThread() {
         }
         
         if (num_frames > 0) {
-            if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
-                std::cout << "Audio buffer is silent, frames: " << num_frames << std::endl;
+            // 计算时间戳和持续时间
+            int64_t timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            
+            // 计算持续时间（毫秒）
+            int64_t duration_ms = (num_frames * 1000) / sample_rate_;
+            
+            // 创建音频包
+            AudioPacket packet;
+            packet.samples = num_frames;
+            packet.timestamp = timestamp;
+            packet.duration_ms = duration_ms;
+            packet.is_silence = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+            
+            // 分配数据
+            size_t data_size = num_frames * channels_ * sizeof(float);
+            packet.data.resize(data_size);
+            
+            if (packet.is_silence) {
+                // 静音帧，填充0
+                memset(packet.data.data(), 0, data_size);
+                std::cout << "Audio captured [SILENCE]: " << num_frames << " frames, " 
+                          << duration_ms << "ms" << std::endl;
             } else {
-                size_t data_size = num_frames * channels_ * sizeof(float);
-                std::vector<uint8_t> audio_data(data_size);
-                memcpy(audio_data.data(), data, data_size);
-                
-                // 检查音频数据是否非零（有声音）
-                bool has_audio = false;
-                const float* audio_float = reinterpret_cast<const float*>(audio_data.data());
-                for (size_t i = 0; i < num_frames * channels_; i++) {
-                    if (std::abs(audio_float[i]) > 0.001f) {
-                        has_audio = true;
-                        break;
-                    }
-                }
-                
-                if (has_audio) {
-                    std::cout << "Audio captured: " << num_frames << " frames, " 
-                              << data_size << " bytes (contains audio)" << std::endl;
-                } else {
-                    std::cout << "Audio captured: " << num_frames << " frames, " 
-                              << data_size << " bytes (silent)" << std::endl;
-                }
-                
-                if (audio_callback_) {
-                    int64_t timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch()).count();
-                    audio_callback_(audio_data, num_frames, timestamp);
-                }
-                
-                capture_count++;
-                if (capture_count % 100 == 0) { // 每100次打印一次统计
-                    std::cout << "Audio capture statistics: " << capture_count << " buffers processed" << std::endl;
-                }
+                // 非静音帧，复制数据
+                memcpy(packet.data.data(), data, data_size);
+                std::cout << "Audio captured: " << num_frames << " frames, " 
+                          << duration_ms << "ms, timestamp: " << timestamp << std::endl;
             }
+            
+            // 调用回调
+            if (audio_callback_) {
+                audio_callback_(packet);
+            }
+            
+            capture_count++;
+            if (capture_count % 100 == 0) {
+                std::cout << "Audio capture statistics: " << capture_count << " buffers processed" << std::endl;
+            }
+            
+            last_capture_time = timestamp;
         }
         
         capture_client_->ReleaseBuffer(num_frames);
@@ -239,4 +239,6 @@ void AudioCapture::captureThread() {
     if (task_handle) {
         AvRevertMmThreadCharacteristics(task_handle);
     }
+    
+    std::cout << "Audio capture thread stopped" << std::endl;
 }

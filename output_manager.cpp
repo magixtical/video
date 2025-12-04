@@ -81,7 +81,7 @@ bool OutputManager::initializeStreamOutput(const std::string& rtmp_url,const Enc
     return true;
 }
 
-void OutputManager::setEncoder(std::shared_ptr<MultiEncoder> encoder){
+void OutputManager::setEncoder(std::shared_ptr<Encoder> encoder){
     
     if (encoder_ == encoder) {
         std::cout << "Encoder already set, skipping..." << std::endl;
@@ -104,7 +104,7 @@ void OutputManager::setEncoder(std::shared_ptr<MultiEncoder> encoder){
     }
 }
 
-void OutputManager::setAudioEncoder(std::shared_ptr<MultiEncoder> audio_encoder){
+void OutputManager::setAudioEncoder(std::shared_ptr<Encoder> audio_encoder){
     std::cout << "=== OutputManager::setAudioEncoder ===" << std::endl;
     std::cout << "Current audio_encoder_: " << audio_encoder_.get() << std::endl;
     std::cout << "New audio_encoder: " << audio_encoder.get() << std::endl;
@@ -617,7 +617,7 @@ bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,A
     std::cout << "writeAudioPacket: stream_index=" << pkt->stream_index 
               << ", original PTS=" << pkt->pts << std::endl;
 
-    // 时间戳处理
+    // 时间戳处理 - 确保时间戳单调递增
     auto* audio_codec_ctx = audio_encoder_->getAudioCodecContext();
     if (audio_codec_ctx) {
         AVRational src_time_base = audio_codec_ctx->time_base;
@@ -626,11 +626,31 @@ bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,A
         std::cout << "Timebase - SRC: " << src_time_base.num << "/" << src_time_base.den
                   << ", DST: " << dst_time_base.num << "/" << dst_time_base.den << std::endl;
 
+        // 计算期望的时间戳（基于已写入的样本数）
+        int64_t expected_pts = av_rescale_q(audio_samples_written_, 
+                                           {1, audio_codec_ctx->sample_rate}, 
+                                           dst_time_base);
+        
+        std::cout << "Expected PTS based on samples written: " << expected_pts << std::endl;
+
         if (pkt->pts == AV_NOPTS_VALUE || pkt->pts < 0) {
-            std::cout << "Fixing invalid audio PTS in writeAudioPacket" << std::endl;
-            pkt->pts = av_rescale_q(audio_samples_written_, {1, audio_codec_ctx->sample_rate}, dst_time_base);
+            std::cout << "Fixing invalid audio PTS, using expected PTS" << std::endl;
+            pkt->pts = expected_pts;
         } else {
+            // 将编码器时间戳转换为输出时间基
             pkt->pts = av_rescale_q(pkt->pts, src_time_base, dst_time_base);
+            
+            // 确保时间戳不会跳跃太多
+            if (pkt->pts < expected_pts) {
+                std::cout << "PTS is behind expected (" << pkt->pts << " < " << expected_pts 
+                          << "), adjusting..." << std::endl;
+                pkt->pts = expected_pts;
+            } else if (pkt->pts > expected_pts + av_rescale_q(audio_codec_ctx->frame_size * 2, 
+                                                             {1, audio_codec_ctx->sample_rate}, 
+                                                             dst_time_base)) {
+                std::cout << "PTS jumped ahead significantly, adjusting to expected" << std::endl;
+                pkt->pts = expected_pts;
+            }
         }
 
         if (pkt->dts == AV_NOPTS_VALUE || pkt->dts < 0) {
@@ -639,18 +659,20 @@ bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,A
             pkt->dts = av_rescale_q(pkt->dts, src_time_base, dst_time_base);
         }
 
-        // 更新样本计数 - 使用编码器报告的样本数
-        if (pkt->duration > 0) {
-            audio_samples_written_ += pkt->duration;
-        } else if (audio_codec_ctx->frame_size > 0) {
-            audio_samples_written_ += audio_codec_ctx->frame_size;
-        } else {
-            // 默认使用1024样本（AAC常见帧大小）
-            audio_samples_written_ += 1024;
+        // 设置持续时间
+        if (pkt->duration <= 0) {
+            pkt->duration = av_rescale_q(audio_codec_ctx->frame_size,
+                                        {1, audio_codec_ctx->sample_rate},
+                                        dst_time_base);
         }
+
+        // 更新样本计数
+        audio_samples_written_ += audio_codec_ctx->frame_size;
         
-        std::cout << "Audio PTS after rescaling: " << pkt->pts 
-                  << ", samples written: " << audio_samples_written_ << std::endl;
+        std::cout << "Audio packet - PTS: " << pkt->pts 
+                  << ", DTS: " << pkt->dts
+                  << ", Duration: " << pkt->duration
+                  << ", Samples written: " << audio_samples_written_ << std::endl;
     } else {
         std::cerr << "writeAudioPacket: audio codec context is null" << std::endl;
         av_packet_free(&pkt);

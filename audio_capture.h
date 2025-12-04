@@ -12,7 +12,17 @@
 
 class AudioCapture {
 public:
-    using AudioCallback = std::function<void(const std::vector<uint8_t>& data, int samples, int64_t timestamp)>;
+    // 新增：定义音频包结构体，包含时间信息
+    struct AudioPacket {
+        std::vector<uint8_t> data;
+        int samples;
+        int64_t timestamp;      // 开始时间戳（毫秒）
+        int64_t duration_ms;    // 持续时间（毫秒）
+        bool is_silence = false; // 是否为静音帧
+    };
+    
+    // 修改回调函数签名
+    using AudioCallback = std::function<void(const AudioPacket& packet)>;
     
     AudioCapture();
     ~AudioCapture();
@@ -24,6 +34,11 @@ public:
     bool isCapturing() const { return capturing_; }
     
     void setAudioCallback(AudioCallback callback) { audio_callback_ = callback; }
+    
+    // 新增：获取当前音频配置
+    int getSampleRate() const { return sample_rate_; }
+    int getChannels() const { return channels_; }
+    int getBytesPerSample() const { return bytes_per_sample_; }
     
 private:
     void captureThread();
