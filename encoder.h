@@ -1,5 +1,6 @@
 #pragma once
 #include"utils.h"
+#include"time_manager.h"
 #include<memory>
 #include<mutex>
 #include<vector>
@@ -53,8 +54,12 @@ public:
     bool encodeAudioFrame(AVFrame* frame);
     bool flush();
     bool reinitialize();
-    void reset() { frame_count_ = 0; audio_frame_count_ = 0; }
-    void resetAudio() { audio_frame_count_=0;audio_samples_encoded_ = 0; }
+    void reset() { frame_count_ = 0; audio_frame_count_ = 0; audio_samples_encoded_ = 0; }
+    void resetAudio() { audio_frame_count_=0; audio_samples_encoded_ = 0; }
+    
+    // 获取当前计数
+    int64_t getFrameCount() const { return frame_count_; }
+    int64_t getAudioSamplesEncoded() const { return audio_samples_encoded_; }
 
     
     void addPacketCallback(PacketCallback callback);

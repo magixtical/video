@@ -137,9 +137,17 @@ bool Encoder::initializeAudio(const EncoderConfig& config){
 bool Encoder::encodeFrame(AVFrame* frame) {
     if (!codec_ctx_ || !frame)
         return false;
-    frame->pts = frame_count_++;
+    
+    // 使用TimeManager计算视频PTS
+    int64_t pts_us = TimeManager::instance().getVideoPts(frame_count_, config_.frame_rate);
+    int64_t pts = TimeManager::convertTimebase(pts_us, codec_ctx_->time_base);
+    frame->pts = pts;
+    
+    frame_count_++;
 
-    std::cout << "Encoding frame #" << frame_count_ << ", pts: " << frame->pts << std::endl;
+    std::cout << "Encoding video frame #" << frame_count_ 
+              << ", pts: " << frame->pts 
+              << " (" << pts_us << "us)" << std::endl;
 
     int ret = avcodec_send_frame(codec_ctx_, frame);
     if (ret < 0) {
@@ -201,15 +209,20 @@ bool Encoder::encodeFrame(AVFrame* frame) {
 bool Encoder::encodeAudioFrame(AVFrame* frame) {
     if(!audio_codec_ctx_ || !frame)
         return false;
-    frame->pts=audio_samples_encoded_;
-    audio_samples_encoded_+=frame->nb_samples;
+    
+    // 使用TimeManager计算音频PTS
+    int64_t pts_us = TimeManager::instance().getAudioPts(audio_samples_encoded_, config_.sample_rate);
+    int64_t pts = TimeManager::convertTimebase(pts_us, audio_codec_ctx_->time_base);
+    frame->pts = pts;
+    
+    audio_samples_encoded_ += frame->nb_samples;
     audio_frame_count_++;
 
-
-    std::cout << "Audio encoding frame #" << frame->pts 
+    std::cout << "Audio encoding frame #" << audio_frame_count_
               << ", samples: " << frame->nb_samples 
-              << " , pts: "<<frame->pts
-              << ", format: " << frame->format << std::endl;
+              << ", pts: " << frame->pts
+              << " (" << pts_us << "us)"
+              << ", total_samples: " << audio_samples_encoded_ << std::endl;
 
     int ret=avcodec_send_frame(audio_codec_ctx_,frame);
     if(ret<0){

@@ -155,20 +155,17 @@ void AudioCapture::captureThread() {
     // 设置线程优先级
     task_handle = AvSetMmThreadCharacteristics(L"Audio", &task_index);
     
-    UINT32 packet_size = 0;
-    audio_client_->GetBufferSize(&packet_size);
-    std::cout<<"Audio capture thread started, buffer size: "<<packet_size<<std::endl;
+    UINT32 buffer_size = 0;
+    audio_client_->GetBufferSize(&buffer_size);
+    std::cout << "Audio capture thread started, buffer size: " << buffer_size << std::endl;
     
     int capture_count = 0;
-    // 记录上一次捕获的时间，用于检测间隔
-    int64_t last_capture_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
 
     while (capturing_) {
         UINT32 next_packet_size;
         HRESULT hr = capture_client_->GetNextPacketSize(&next_packet_size);
         if (FAILED(hr)){
-            std::cerr<<"Failed to get next packet size: "<<std::hex<<hr<<std::endl;
+            std::cerr << "Failed to get next packet size: 0x" << std::hex << hr << std::dec << std::endl;
             break;
         }
         
@@ -185,39 +182,29 @@ void AudioCapture::captureThread() {
         hr = capture_client_->GetBuffer(&data, &num_frames, &flags,
                                        &device_position, &qpc_position);
         if (FAILED(hr)) {
-            std::cerr<<"Failed to get buffer: "<<std::hex<<hr<<std::endl;
+            std::cerr << "Failed to get buffer: 0x" << std::hex << hr << std::dec << std::endl;
             break;
         }
         
         if (num_frames > 0) {
-            // 计算时间戳和持续时间
-            int64_t timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count();
-            
-            // 计算持续时间（毫秒）
-            int64_t duration_ms = (num_frames * 1000) / sample_rate_;
-            
-            // 创建音频包
+            // 创建音频包（简化版）
             AudioPacket packet;
             packet.samples = num_frames;
-            packet.timestamp = timestamp;
-            packet.duration_ms = duration_ms;
-            packet.is_silence = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
             
-            // 分配数据
+            // 分配数据：float格式，交错立体声（L, R, L, R, ...）
             size_t data_size = num_frames * channels_ * sizeof(float);
             packet.data.resize(data_size);
             
-            if (packet.is_silence) {
-                // 静音帧，填充0
-                memset(packet.data.data(), 0, data_size);
-                std::cout << "Audio captured [SILENCE]: " << num_frames << " frames, " 
-                          << duration_ms << "ms" << std::endl;
+            // 直接复制数据（WASAPI已经处理静音为0）
+            memcpy(packet.data.data(), data, data_size);
+            
+            // 调试信息（包括静音标志）
+            if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0) {
+                std::cout << "Audio captured [SILENCE]: " << num_frames << " frames" << std::endl;
             } else {
-                // 非静音帧，复制数据
-                memcpy(packet.data.data(), data, data_size);
-                std::cout << "Audio captured: " << num_frames << " frames, " 
-                          << duration_ms << "ms, timestamp: " << timestamp << std::endl;
+                if (capture_count % 50 == 0) {  // 减少日志输出
+                    std::cout << "Audio captured: " << num_frames << " frames" << std::endl;
+                }
             }
             
             // 调用回调
@@ -227,10 +214,8 @@ void AudioCapture::captureThread() {
             
             capture_count++;
             if (capture_count % 100 == 0) {
-                std::cout << "Audio capture statistics: " << capture_count << " buffers processed" << std::endl;
+                std::cout << "Audio capture statistics: " << capture_count << " packets processed" << std::endl;
             }
-            
-            last_capture_time = timestamp;
         }
         
         capture_client_->ReleaseBuffer(num_frames);
@@ -240,5 +225,5 @@ void AudioCapture::captureThread() {
         AvRevertMmThreadCharacteristics(task_handle);
     }
     
-    std::cout << "Audio capture thread stopped" << std::endl;
+    std::cout << "Audio capture thread stopped, total packets: " << capture_count << std::endl;
 }

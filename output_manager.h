@@ -1,5 +1,6 @@
 #pragma once
 #include"encoder.h"
+#include"time_manager.h"
 #include<string>
 #include<atomic>
 #include<memory>
@@ -52,8 +53,4 @@ class OutputManager {
     std::atomic<bool> streaming_{false};
     
     EncoderConfig config_;
-    int64_t start_time_ = 0;
-    int64_t video_pts_counter_= 0;
-    int64_t audio_pts_counter_= 0;
-    int64_t audio_samples_written_=0;
 };

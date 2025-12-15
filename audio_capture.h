@@ -12,16 +12,12 @@
 
 class AudioCapture {
 public:
-    // 新增：定义音频包结构体，包含时间信息
+    // 简化：音频包只包含必要信息
     struct AudioPacket {
-        std::vector<uint8_t> data;
-        int samples;
-        int64_t timestamp;      // 开始时间戳（毫秒）
-        int64_t duration_ms;    // 持续时间（毫秒）
-        bool is_silence = false; // 是否为静音帧
+        std::vector<uint8_t> data;  // 音频数据（float格式，交错立体声）
+        int samples;                 // 样本数（每个通道）
     };
     
-    // 修改回调函数签名
     using AudioCallback = std::function<void(const AudioPacket& packet)>;
     
     AudioCapture();

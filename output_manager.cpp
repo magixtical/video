@@ -3,9 +3,6 @@
 
 OutputManager::OutputManager(){
     avformat_network_init();
-    video_pts_counter_ = 0;
-    audio_pts_counter_ = 0;
-    audio_samples_written_ = 0;
 }
 
 
@@ -145,9 +142,9 @@ bool OutputManager::start() {
         encoder_->reset();
     if(audio_encoder_)
     {
-        audio_pts_counter_ = 0;
-        audio_samples_written_ = 0;
+        audio_encoder_->resetAudio();
     }
+    
     bool success = true;
 
     std::cout << "OutputManager::start() - file_fmt_ctx_: " << (file_fmt_ctx_ ? "valid" : "null")
@@ -294,9 +291,6 @@ void OutputManager::stop(){
         streaming_ = false;
         std::cout << "Stop streaming" << std::endl;
     }
-    video_pts_counter_ = 0;
-    audio_pts_counter_ = 0;
-    audio_samples_written_ = 0;
 }
 
 
@@ -525,15 +519,6 @@ void OutputManager::onAudioEncodedPacket(AVPacket* packet) {
     std::cout << "Recording: " << recording_ << ", FileCtx: " << (file_fmt_ctx_ ? "valid" : "null")
               << ", AudioStream: " << (file_audio_stream_ ? "valid" : "null") << std::endl;
 
-
-    if(packet->pts == AV_NOPTS_VALUE || packet->pts < 0) {
-        std::cout << "Fixing invalid audio PTS, using accumulated samples: " << audio_samples_written_ << std::endl;
-        packet->pts = audio_samples_written_;
-    }
-    if(packet->dts == AV_NOPTS_VALUE || packet->dts < 0) {
-        packet->dts = packet->pts;
-    }
-
     if(recording_&&file_fmt_ctx_&&file_audio_stream_){
         AVPacket* file_packet = av_packet_clone(packet);
         if(file_packet){
@@ -575,7 +560,7 @@ bool OutputManager::writePacket(AVPacket* packet, AVFormatContext* fmt_ctx, AVSt
 
     pkt->stream_index = stream->index;
 
-    // 时间戳处理
+    // 时间戳处理 - 从编码器时间基转换到输出流时间基
     auto* codec_ctx = encoder_->getCodecContext();
     if (codec_ctx && pkt->pts != AV_NOPTS_VALUE && pkt->dts != AV_NOPTS_VALUE) {
         AVRational src_time_base = codec_ctx->time_base;
@@ -583,6 +568,9 @@ bool OutputManager::writePacket(AVPacket* packet, AVFormatContext* fmt_ctx, AVSt
 
         pkt->pts = av_rescale_q(pkt->pts, src_time_base, dst_time_base);
         pkt->dts = av_rescale_q(pkt->dts, src_time_base, dst_time_base);
+        if (pkt->duration > 0) {
+            pkt->duration = av_rescale_q(pkt->duration, src_time_base, dst_time_base);
+        }
     }
 
     // 写入包
@@ -596,7 +584,6 @@ bool OutputManager::writePacket(AVPacket* packet, AVFormatContext* fmt_ctx, AVSt
         return false;
     }
 
-    video_pts_counter_++;
     return true;
 }
 
@@ -617,7 +604,7 @@ bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,A
     std::cout << "writeAudioPacket: stream_index=" << pkt->stream_index 
               << ", original PTS=" << pkt->pts << std::endl;
 
-    // 时间戳处理 - 确保时间戳单调递增
+    // 时间戳处理 - 从编码器时间基转换到输出流时间基
     auto* audio_codec_ctx = audio_encoder_->getAudioCodecContext();
     if (audio_codec_ctx) {
         AVRational src_time_base = audio_codec_ctx->time_base;
@@ -626,31 +613,12 @@ bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,A
         std::cout << "Timebase - SRC: " << src_time_base.num << "/" << src_time_base.den
                   << ", DST: " << dst_time_base.num << "/" << dst_time_base.den << std::endl;
 
-        // 计算期望的时间戳（基于已写入的样本数）
-        int64_t expected_pts = av_rescale_q(audio_samples_written_, 
-                                           {1, audio_codec_ctx->sample_rate}, 
-                                           dst_time_base);
-        
-        std::cout << "Expected PTS based on samples written: " << expected_pts << std::endl;
-
-        if (pkt->pts == AV_NOPTS_VALUE || pkt->pts < 0) {
-            std::cout << "Fixing invalid audio PTS, using expected PTS" << std::endl;
-            pkt->pts = expected_pts;
-        } else {
-            // 将编码器时间戳转换为输出时间基
+        if (pkt->pts != AV_NOPTS_VALUE && pkt->pts >= 0) {
             pkt->pts = av_rescale_q(pkt->pts, src_time_base, dst_time_base);
-            
-            // 确保时间戳不会跳跃太多
-            if (pkt->pts < expected_pts) {
-                std::cout << "PTS is behind expected (" << pkt->pts << " < " << expected_pts 
-                          << "), adjusting..." << std::endl;
-                pkt->pts = expected_pts;
-            } else if (pkt->pts > expected_pts + av_rescale_q(audio_codec_ctx->frame_size * 2, 
-                                                             {1, audio_codec_ctx->sample_rate}, 
-                                                             dst_time_base)) {
-                std::cout << "PTS jumped ahead significantly, adjusting to expected" << std::endl;
-                pkt->pts = expected_pts;
-            }
+        } else {
+            std::cerr << "Invalid audio PTS in packet" << std::endl;
+            av_packet_free(&pkt);
+            return false;
         }
 
         if (pkt->dts == AV_NOPTS_VALUE || pkt->dts < 0) {
@@ -664,15 +632,13 @@ bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,A
             pkt->duration = av_rescale_q(audio_codec_ctx->frame_size,
                                         {1, audio_codec_ctx->sample_rate},
                                         dst_time_base);
+        } else {
+            pkt->duration = av_rescale_q(pkt->duration, src_time_base, dst_time_base);
         }
-
-        // 更新样本计数
-        audio_samples_written_ += audio_codec_ctx->frame_size;
         
         std::cout << "Audio packet - PTS: " << pkt->pts 
                   << ", DTS: " << pkt->dts
-                  << ", Duration: " << pkt->duration
-                  << ", Samples written: " << audio_samples_written_ << std::endl;
+                  << ", Duration: " << pkt->duration << std::endl;
     } else {
         std::cerr << "writeAudioPacket: audio codec context is null" << std::endl;
         av_packet_free(&pkt);
@@ -691,8 +657,7 @@ bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,A
         return false;
     }
 
-    audio_pts_counter_++;
-    std::cout << "✓ Successfully wrote audio packet, total: " << audio_pts_counter_ << std::endl;
+    std::cout << "✓ Successfully wrote audio packet" << std::endl;
     return true;
 }
 
@@ -704,10 +669,6 @@ void OutputManager::reset() {
     rtmp_url_.clear();
     recording_ = false;
     streaming_ = false;
-    video_pts_counter_ = 0;
-    audio_pts_counter_ = 0;
-    audio_samples_written_ = 0;
-
 
     file_fmt_ctx_ = nullptr;
     file_video_stream_ = nullptr;
