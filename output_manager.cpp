@@ -100,7 +100,7 @@ void OutputManager::setEncoder(std::shared_ptr<Encoder> encoder){
         }
     }
 }
-
+/*
 void OutputManager::setAudioEncoder(std::shared_ptr<Encoder> audio_encoder){
     std::cout << "=== OutputManager::setAudioEncoder ===" << std::endl;
     std::cout << "Current audio_encoder_: " << audio_encoder_.get() << std::endl;
@@ -132,7 +132,7 @@ void OutputManager::setAudioEncoder(std::shared_ptr<Encoder> audio_encoder){
 }
 
 
-
+*/
 bool OutputManager::start() {
     if (!encoder_) {
         std::cerr << "Encoder not set" << std::endl;
@@ -140,10 +140,12 @@ bool OutputManager::start() {
     }
     if(encoder_)
         encoder_->reset();
+    /*
     if(audio_encoder_)
     {
         audio_encoder_->resetAudio();
     }
+    */
     
     bool success = true;
 
@@ -167,7 +169,7 @@ bool OutputManager::start() {
                 file_video_stream_->time_base = codec_ctx->time_base;
             }
         }
-
+        /*
         if(audio_encoder_&&file_audio_stream_){
             auto* audio_codec_ctx = audio_encoder_->getAudioCodecContext();
             if (audio_codec_ctx) {
@@ -181,7 +183,7 @@ bool OutputManager::start() {
                 file_audio_stream_->time_base = audio_codec_ctx->time_base;
             }
         }
-
+        */
         int ret = avformat_write_header(file_fmt_ctx_, nullptr);
         if (ret < 0) {
             char error[AV_ERROR_MAX_STRING_SIZE];
@@ -196,10 +198,12 @@ bool OutputManager::start() {
                 std::cout << "Video stream time_base: " << file_video_stream_->time_base.num
                     << "/" << file_video_stream_->time_base.den << std::endl;
             }
+            /*
             if (file_audio_stream_) {
                 std::cout << "Audio stream time_base: " << file_audio_stream_->time_base.num
                     << "/" << file_audio_stream_->time_base.den << std::endl;
             }
+            */
         }
     }
 
@@ -218,10 +222,10 @@ bool OutputManager::start() {
                 else {
                     std::cout << "Successfully copied video codec parameters to stream" << std::endl;
                 }
-                stream_video_stream_->time_base = {1, 1000}; // 使用毫秒精度
+                stream_video_stream_->time_base = codec_ctx->time_base;
             }
         }
-
+        /*
         // 设置音频流参数
         if (audio_encoder_ && stream_audio_stream_) {
             auto* audio_codec_ctx = audio_encoder_->getAudioCodecContext();
@@ -236,7 +240,7 @@ bool OutputManager::start() {
                 stream_audio_stream_->time_base = {1, audio_codec_ctx->sample_rate};
             }
         }
-
+        */
         int ret = avformat_write_header(stream_fmt_ctx_, nullptr);
         if (ret < 0) {
             char error[AV_ERROR_MAX_STRING_SIZE];
@@ -251,10 +255,12 @@ bool OutputManager::start() {
                 std::cout << "Video stream time_base after header: " << stream_video_stream_->time_base.num
                     << "/" << stream_video_stream_->time_base.den << std::endl;
             }
+            /*
             if (stream_audio_stream_) {
                 std::cout << "Audio stream time_base after header: " << stream_audio_stream_->time_base.num
                     << "/" << stream_audio_stream_->time_base.den << std::endl;
             }
+            */
         }
     }
 
@@ -329,7 +335,7 @@ bool OutputManager::setupFileOutput(){
             }
         }
     }
-
+    /*
     if(audio_encoder_){
         file_audio_stream_ = avformat_new_stream(file_fmt_ctx_,nullptr);
         if(!file_audio_stream_){
@@ -348,6 +354,7 @@ bool OutputManager::setupFileOutput(){
             file_audio_stream_->time_base=audio_codec_ctx->time_base;
         }
     }
+    */
 
     if(!(file_fmt_ctx_->oformat->flags&AVFMT_NOFILE)){
         ret=avio_open(&file_fmt_ctx_->pb,filename_.c_str(),AVIO_FLAG_WRITE);
@@ -363,18 +370,26 @@ bool OutputManager::setupFileOutput(){
         std::cout << "  Video stream: " << file_video_stream_->codecpar->width << "x" 
                   << file_video_stream_->codecpar->height << std::endl;
     }
-
+    /*
     if (file_audio_stream_) {
         std::cout << "  Audio stream: " << file_audio_stream_->codecpar->sample_rate << "Hz, "
                   << file_audio_stream_->codecpar->ch_layout.nb_channels << " channels" << std::endl;
     }
-
+    */
+   
     return true;
 }
 
 bool OutputManager::setupStreamOutput() {
-    std::cout << "Setting up stream output: " << rtmp_url_ << std::endl;
-
+    std::cout << "=== SETUP STREAM OUTPUT DEBUG ===" << std::endl;
+    std::cout << "RTMP URL: " << rtmp_url_ << std::endl;
+    std::cout << "Encoder available: " << (encoder_ ? "YES" : "NO") << std::endl;
+    
+    if (!encoder_) {
+        std::cerr << "ERROR: Encoder is not set before setupStreamOutput" << std::endl;
+        return false;
+    }
+    
     // 分配输出上下文
     int ret = avformat_alloc_output_context2(&stream_fmt_ctx_, nullptr, "flv", rtmp_url_.c_str());
     if (ret < 0 || !stream_fmt_ctx_) {
@@ -402,10 +417,11 @@ bool OutputManager::setupStreamOutput() {
                 std::cerr << "Failed to copy codec parameters to stream" << std::endl;
                 return false;
             }
-            stream_video_stream_->time_base = { 1, 1000 }; // 使用毫秒精度
+            stream_video_stream_->time_base = {1,1000};
         }
     }
 
+    /*
     if(audio_encoder_){
         stream_audio_stream_=avformat_new_stream(stream_fmt_ctx_,nullptr);
         if(!stream_audio_stream_){
@@ -424,7 +440,7 @@ bool OutputManager::setupStreamOutput() {
             stream_audio_stream_->time_base = {1,audio_codec_ctx->sample_rate};
         }
     }
-
+    */
     // 显示流信息
     std::cout << "Stream parameters:" << std::endl;
     if (stream_video_stream_) {
@@ -433,13 +449,14 @@ bool OutputManager::setupStreamOutput() {
                   << ", time_base: " << stream_video_stream_->time_base.num 
                   << "/" << stream_video_stream_->time_base.den << std::endl;
     }
+    /*
     if (stream_audio_stream_) {
         std::cout << "  Audio: " << stream_audio_stream_->codecpar->sample_rate << "Hz, "
                   << stream_audio_stream_->codecpar->ch_layout.nb_channels << " channels"
                   << ", time_base: " << stream_audio_stream_->time_base.num 
                   << "/" << stream_audio_stream_->time_base.den << std::endl;
     }
-
+    */
     // 网络选项
     AVDictionary* options = nullptr;
     av_dict_set(&options, "rw_timeout", "10000000", 0);
@@ -477,6 +494,11 @@ void OutputManager::onEncodedPacket(AVPacket* packet) {
         return;
     }
 
+     // 添加包信息调试
+    std::cout << "=== PACKET INFO ===" << std::endl;
+    std::cout << "Packet size: " << packet->size << ", PTS: " << packet->pts 
+              << ", DTS: " << packet->dts << ", Duration: " << packet->duration 
+              << ", Keyframe: " << (packet->flags & AV_PKT_FLAG_KEY ? "YES" : "NO") << std::endl;
 
     // 为文件输出写入包
     if (recording_ && file_fmt_ctx_ && file_video_stream_) {
@@ -497,15 +519,18 @@ void OutputManager::onEncodedPacket(AVPacket* packet) {
                 std::cout << "✓ Successfully wrote packet to stream" << std::endl;
             }
             else {
-                // 流写入失败，禁用流输出但不清除上下文
-                std::cerr << "Stream write failed, disabling streaming" << std::endl;
-                streaming_ = false;
+                std::cerr << "✗ Failed to write packet to stream" << std::endl;
+                std::cerr << "Streaming status: " << streaming_ << std::endl;
+                std::cerr << "Stream format context: " << (stream_fmt_ctx_ ? "valid" : "null") << std::endl;
+                std::cerr << "Video stream: " << (stream_video_stream_ ? "valid" : "null") << std::endl;
+                std::cerr << "Stream write failed, but keeping streaming enabled for retry" << std::endl;
+                //streaming_ = false;
             }
             av_packet_free(&stream_packet);
         }
     }
 }
-
+/*
 void OutputManager::onAudioEncodedPacket(AVPacket* packet) {
     if(!packet || packet->size <= 0){
         std::cout << "OutputManager: received empty audio packet, ignoring" << std::endl;
@@ -546,7 +571,7 @@ void OutputManager::onAudioEncodedPacket(AVPacket* packet) {
     }
 }
 
-
+*/
 
 bool OutputManager::writePacket(AVPacket* packet, AVFormatContext* fmt_ctx, AVStream* stream) {
     if (!fmt_ctx || !stream || !packet || packet->size <= 0) {
@@ -566,11 +591,16 @@ bool OutputManager::writePacket(AVPacket* packet, AVFormatContext* fmt_ctx, AVSt
         AVRational src_time_base = codec_ctx->time_base;
         AVRational dst_time_base = stream->time_base;
 
+         std::cout << "Timebase conversion - SRC: " << src_time_base.num << "/" << src_time_base.den
+                  << " -> DST: " << dst_time_base.num << "/" << dst_time_base.den << std::endl;
+        std::cout << "Original PTS: " << pkt->pts << ", DTS: " << pkt->dts << std::endl;
+
         pkt->pts = av_rescale_q(pkt->pts, src_time_base, dst_time_base);
         pkt->dts = av_rescale_q(pkt->dts, src_time_base, dst_time_base);
         if (pkt->duration > 0) {
             pkt->duration = av_rescale_q(pkt->duration, src_time_base, dst_time_base);
         }
+        std::cout << "Converted PTS: " << pkt->pts << ", DTS: " << pkt->dts << std::endl;
     }
 
     // 写入包
@@ -580,13 +610,22 @@ bool OutputManager::writePacket(AVPacket* packet, AVFormatContext* fmt_ctx, AVSt
     if (ret < 0) {
         char error[AV_ERROR_MAX_STRING_SIZE];
         av_make_error_string(error, sizeof(error), ret);
-        std::cerr << "Failed to write packet: " << error << std::endl;
+        std::cerr << "Failed to write packet: Error number " << ret << " occurred" << std::endl;
+        std::cerr << "Error details: " << error << std::endl;
+        
+        // 添加详细的错误分析
+        if (ret == -10053) {
+            std::cerr << "ERROR -10053: Connection reset by peer. This usually means:" << std::endl;
+            std::cerr << "1. The RTMP server rejected the stream format" << std::endl;
+            std::cerr << "2. There are incompatible codec parameters" << std::endl;
+            std::cerr << "3. The server closed the connection due to invalid data" << std::endl;
+        }
         return false;
     }
 
     return true;
 }
-
+/*
 bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,AVStream* stream) {
     if(!fmt_ctx || !stream || !packet || packet->size <= 0) {
         std::cerr << "writeAudioPacket: invalid parameters" << std::endl;
@@ -660,7 +699,7 @@ bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,A
     std::cout << "✓ Successfully wrote audio packet" << std::endl;
     return true;
 }
-
+*/
 
 void OutputManager::reset() {
     stop();

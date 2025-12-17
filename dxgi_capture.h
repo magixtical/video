@@ -25,6 +25,11 @@ struct CaptureConfig{
 	int target_width = 0;      // 0 表示使用原始分辨率
     int target_height = 0;     // 0 表示使用原始分辨率
     bool maintain_aspect_ratio = true;  // 是否保持宽高比
+
+	bool capture_region= false;
+	RECT capture_rect={0,0,0,0};
+	int region_width = 0;
+	int region_height = 0;
 };
 
 struct VideoFrame {

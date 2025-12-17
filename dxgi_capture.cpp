@@ -108,7 +108,7 @@ bool DXGICapture::create_staging_texture(UINT width, UINT height) {
 	texture_height_=height;
 	texture_width_=width;
 
-	//staging texture
+	//staging texture(保持全屏大小)
 	D3D11_TEXTURE2D_DESC desc={};
 	desc.Width = width;
 	desc.Height = height;
@@ -127,12 +127,13 @@ bool DXGICapture::create_staging_texture(UINT width, UINT height) {
 		std::cerr<<"Failed to create staging texture"<<std::endl;
 		return false;
 	}
-
-	int target_width = config_.target_width > 0 ? config_.target_width : width;
-    int target_height = config_.target_height > 0 ? config_.target_height : height;
+	int src_width = config_.capture_region ? config_.region_width : width;
+    int src_height = config_.capture_region ? config_.region_height : height;
+    int target_width = config_.target_width > 0 ? config_.target_width : src_width;
+    int target_height = config_.target_height > 0 ? config_.target_height : src_height;
 
 	if (config_.maintain_aspect_ratio && config_.target_width > 0 && config_.target_height > 0) {
-        float src_aspect = (float)width / height;
+        float src_aspect = (float)src_width / src_height;
         float dst_aspect = (float)config_.target_width / config_.target_height;
         
         if (src_aspect > dst_aspect) {
@@ -142,17 +143,27 @@ bool DXGICapture::create_staging_texture(UINT width, UINT height) {
         }
     }
 
-	sws_context_ = sws_getContext(width,height,AV_PIX_FMT_BGRA,target_width,target_height,AV_PIX_FMT_YUV420P,SWS_BILINEAR,nullptr,nullptr,nullptr);
-	
-	if(!sws_context_){
-		std::cerr<<"Failed to create sws_context"<<std::endl;
-		return false;
-	}
+    sws_context_ = sws_getContext(
+		src_width, 
+		src_height, 
+		AV_PIX_FMT_BGRA, 
+        target_width, 
+		target_height, 
+		AV_PIX_FMT_YUV420P, 
+        SWS_BILINEAR, 
+		nullptr, 
+		nullptr, 
+		nullptr
+	);
+    
+    if(!sws_context_){
+        std::cerr<<"Failed to create sws_context"<<std::endl;
+        return false;
+    }
 
-
-	std::cout << "Scaling configured: " << width << "x" << height 
+    std::cout << "Scaling configured: " << src_width << "x" << src_height 
               << " -> " << target_width << "x" << target_height << std::endl;
-	return true;
+    return true;
 }
 
 
@@ -247,10 +258,14 @@ bool DXGICapture::convert_texture_to_yuv(ID3D11Texture2D* texture, VideoFrame& f
 	D3D11_TEXTURE2D_DESC desc;
 	texture->GetDesc(&desc);
 
-
 	int target_width = config_.target_width > 0 ? config_.target_width : desc.Width;
     int target_height = config_.target_height > 0 ? config_.target_height : desc.Height;
     
+	if(config_.capture_region){
+		target_width=config_.region_width;
+		target_height=config_.region_height;
+	}
+
     // 如果保持宽高比，调整目标分辨率
     if (config_.maintain_aspect_ratio && config_.target_width > 0 && config_.target_height > 0) {
         float src_aspect = (float)desc.Width / desc.Height;
@@ -281,6 +296,12 @@ bool DXGICapture::convert_texture_to_yuv(ID3D11Texture2D* texture, VideoFrame& f
         uint8_t* src_data[4] = { static_cast<uint8_t*>(mapped_resource.pData), nullptr, nullptr, nullptr };
         int src_linesize[4] = { static_cast<int>(mapped_resource.RowPitch), 0, 0, 0 };
 
+		if(config_.capture_region){
+			int start_x = config_.capture_rect.left;
+            int start_y = config_.capture_rect.top;
+            src_data[0] += start_y * mapped_resource.RowPitch + start_x * 4;
+		}
+
         uint8_t* y_plane = frame.data.data();
         uint8_t* u_plane = y_plane + target_width * target_height;
         uint8_t* v_plane = u_plane + (target_width / 2) * (target_height / 2);
@@ -295,9 +316,12 @@ bool DXGICapture::convert_texture_to_yuv(ID3D11Texture2D* texture, VideoFrame& f
         // 执行格式转换和缩放
         int converted_lines = sws_scale(
             sws_context_,
-            src_data, src_linesize,
-            0, desc.Height,
-            dst_data, dst_linesize
+            src_data, 
+			src_linesize,
+            0, 
+			config_.capture_region?config_.region_height:desc.Height,
+            dst_data, 
+			dst_linesize
         );
 
         d3d_context_->Unmap(staging_texture_.Get(), 0);
@@ -309,40 +333,41 @@ bool DXGICapture::convert_texture_to_yuv(ID3D11Texture2D* texture, VideoFrame& f
         }
     }
     else {
-        // 如果没有缩放上下文，使用手动转换（仅当分辨率匹配时）
-        if (desc.Width != target_width || desc.Height != target_height) {
-            std::cerr << "Resolution mismatch and no scaling context available" << std::endl;
-            d3d_context_->Unmap(staging_texture_.Get(), 0);
-            return false;
-        }
-        
-        // 手动转换：BGRA转YUV420P
         const uint8_t* src_data = static_cast<const uint8_t*>(mapped_resource.pData);
         uint8_t* y_plane = frame.data.data();
         uint8_t* u_plane = y_plane + target_width * target_height;
         uint8_t* v_plane = u_plane + (target_width / 2) * (target_height / 2);
 
-        for (int y = 0; y < target_height; ++y) {
-            for (int x = 0; x < target_width; ++x) {
+        int start_x = config_.capture_region ? config_.capture_rect.left : 0;
+        int start_y = config_.capture_region ? config_.capture_rect.top : 0;
+        int end_x = config_.capture_region ? config_.capture_rect.right : desc.Width;
+        int end_y = config_.capture_region ? config_.capture_rect.bottom : desc.Height;
+
+        for (int y = start_y; y < end_y; ++y) {
+            for (int x = start_x; x < end_x; ++x) {
                 const uint8_t* pixel = src_data + (y * mapped_resource.RowPitch + x * 4);
                 uint8_t b = pixel[0];
                 uint8_t g = pixel[1];
                 uint8_t r = pixel[2];
 
+                // 计算目标像素位置
+                int dst_y = y - start_y;
+                int dst_x = x - start_x;
+                
                 // 计算Y分量
-                y_plane[y * target_width + x] = static_cast<uint8_t>(
+                y_plane[dst_y * target_width + dst_x] = static_cast<uint8_t>(
                     (0.299 * r + 0.587 * g + 0.114 * b)
-                    );
+                );
 
-                // 下采样UV分量（每2x2块计算一个UV值）
-                if ((y % 2 == 0) && (x % 2 == 0)) {
-                    int uv_index = (y / 2) * (target_width / 2) + (x / 2);
+                // 下采样UV分量
+                if ((dst_y % 2 == 0) && (dst_x % 2 == 0)) {
+                    int uv_index = (dst_y / 2) * (target_width / 2) + (dst_x / 2);
                     u_plane[uv_index] = static_cast<uint8_t>(
                         (-0.169 * r - 0.331 * g + 0.5 * b) + 128
-                        );
+                    );
                     v_plane[uv_index] = static_cast<uint8_t>(
                         (0.5 * r - 0.419 * g - 0.081 * b) + 128
-                        );
+                    );
                 }
             }
         }

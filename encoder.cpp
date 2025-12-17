@@ -34,8 +34,24 @@ bool Encoder::initialize(const EncoderConfig& config){
     codec_ctx_->max_b_frames=config_.max_b_frames;
 
     if(codec_->id==AV_CODEC_ID_H264){
-        av_opt_set(codec_ctx_->priv_data,"preset","ultrafast",0);
-        av_opt_set(codec_ctx_->priv_data,"tune","zerolatency",0);
+        // 关键修复：使用用户配置的预设和调优参数
+        if (!config_.preset.empty()) {
+            av_opt_set(codec_ctx_->priv_data, "preset", config_.preset.c_str(), 0);
+        }
+        if (!config_.tune.empty()) {
+            av_opt_set(codec_ctx_->priv_data, "tune", config_.tune.c_str(), 0);
+        }
+        
+        // 添加RTMP/FLV兼容性参数
+        av_opt_set(codec_ctx_->priv_data, "profile", "baseline", 0);  // FLV兼容的profile
+        av_opt_set(codec_ctx_->priv_data, "level", "3.1", 0);         // 设置合适的level
+        av_opt_set_int(codec_ctx_->priv_data, "forced-idr", 1, 0);    // 强制IDR帧
+        
+        // 添加更多FLV兼容性参数
+        av_opt_set(codec_ctx_->priv_data, "x264-params", "cabac=0:ref=1:deblock=1:analyse=0:me=dia:subme=0:psy=0:mixed-refs=0:weightb=0:8x8dct=0:trellis=0", 0);
+        
+        // 设置编码器标志
+        codec_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
     }
 
     int ret=avcodec_open2(codec_ctx_,codec_,nullptr);
@@ -307,15 +323,16 @@ bool Encoder::reinitialize() {
         avcodec_free_context(&codec_ctx_);
         codec_ctx_ = nullptr;
     }
+    /*
     if(audio_codec_ctx_)
     {
         avcodec_free_context(&audio_codec_ctx_);
-    }
+    }*/
     if(swr_ctx_)
     {
         swr_free(&swr_ctx_);
     }
-    return initialize(config_)&&initializeAudio(config_);
+    return initialize(config_);//&&initializeAudio(config_);
 }
 
 void Encoder::addPacketCallback(PacketCallback callback) {

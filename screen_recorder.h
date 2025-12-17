@@ -37,11 +37,11 @@ class ScreenRecorder{
     private:
 
     void capture_loop();
-    void audio_capture_loop();
+    //void audio_capture_loop();
     void encode_loop();
-    void audio_encode_loop();
+    //void audio_encode_loop();
     bool convertToAVFrame(const VideoFrame&src,AVFrame* dst);
-    bool convertToAudioFrame(const uint8_t* audio_data,size_t data_size,AVFrame* frame);
+    //bool convertToAudioFrame(const uint8_t* audio_data,size_t data_size,AVFrame* frame);
     
     std::string output_path_;
     std::string getFilename(const std::string& original_filename);

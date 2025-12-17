@@ -18,7 +18,7 @@ class OutputManager {
     bool initializeStreamOutput(const std::string& rtmp_url,const EncoderConfig& config);
 
     void setEncoder(std::shared_ptr<Encoder> encoder);
-    void setAudioEncoder(std::shared_ptr<Encoder> encoder);
+    //void setAudioEncoder(std::shared_ptr<Encoder> encoder);
 
     bool start();
     void stop();
@@ -28,11 +28,11 @@ class OutputManager {
 
     private:
     void onEncodedPacket(AVPacket* packet);
-    void onAudioEncodedPacket(AVPacket* packet);
+    //void onAudioEncodedPacket(AVPacket* packet);
     bool setupFileOutput();
     bool setupStreamOutput();
     bool writePacket(AVPacket* packet,AVFormatContext* fmt_ctx_,AVStream* stream);
-    bool writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx_,AVStream* stream);
+    //bool writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx_,AVStream* stream);
     
     bool testRTMPConnection(const std::string& url);
 

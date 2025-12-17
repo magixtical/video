@@ -99,24 +99,28 @@ int main() {
         RecordConfig config;
         
         // 捕获配置
-        config.capture_config.capture_full_screen = true;
-        config.capture_config.frame_rate = 30;
-        config.capture_config.target_width = 1280;
-        config.capture_config.target_height = 800;
+        config.capture_config.capture_full_screen = false;
+        config.capture_config.capture_region = true;
+        config.capture_config.capture_rect = {160, 120, 800, 600};  // 录制区域
+        config.capture_config.region_width = 640;  // 区域宽度
+        config.capture_config.region_height = 480;  // 区域高度
+
         config.capture_config.maintain_aspect_ratio = true;
         
         // 编码配置
-        config.encoder_config.width = 1280;
-        config.encoder_config.height = 800;
+        config.encoder_config.width = 640;
+        config.encoder_config.height = 480;
         config.encoder_config.frame_rate = 30;
-        config.encoder_config.video_bitrate = 4000000; // 8 Mbps for recording
+        config.encoder_config.video_bitrate = 1000000;  // 1Mbps
         config.encoder_config.video_codec_name = "libx264";
-        config.encoder_config.preset = "medium";
+        config.encoder_config.preset = "veryfast";
+        config.encoder_config.tune = "zerolatency";
         config.encoder_config.max_b_frames = 0;  // FLV 通常不支持 B-frames
+        config.encoder_config.gop_size = 10;  // 
         config.encoder_config.pixel_format = AV_PIX_FMT_YUV420P;  // FLV 标准格式
-        config.encoder_config.audio_bitrate = 128000; // 128kbps
-        config.encoder_config.sample_rate = 48000;
-        config.encoder_config.channels = 2;
+        config.encoder_config.audio_bitrate = 0; 
+        config.encoder_config.sample_rate = 0;
+        config.encoder_config.channels = 0;
         config.encoder_config.channel_layout = AV_CHANNEL_LAYOUT_STEREO;
         config.encoder_config.sample_format = AV_SAMPLE_FMT_FLTP;
         config.encoder_config.audio_codec_name = "aac";
@@ -126,8 +130,8 @@ int main() {
         config.output_directory="recording";
         config.output_filename = "screen_record.mp4";
         
-        config.stream_to_rtmp = false;
-        config.rtmp_url = "rtmp://localhost/live/livestream";
+        config.stream_to_rtmp = true;
+        config.rtmp_url = "rtmp://127.0.0.1/live/livestream";
         
         recorder = std::make_unique<ScreenRecorder>();
         
