@@ -8,6 +8,7 @@
 #include<functional>
 #include<thread>
 #include<atomic>
+#include "time_manager.h"
 
 extern"C"{
 	#include<libswscale/swscale.h>
@@ -30,6 +31,13 @@ struct CaptureConfig{
 	RECT capture_rect={0,0,0,0};
 	int region_width = 0;
 	int region_height = 0;
+
+	bool enable_region_optimization = true; 
+	bool use_crop_only=false;
+	int region_quality=1;
+	bool dynamic_region_adjustment=true;
+	int capture_padding=0;
+
 };
 
 struct VideoFrame {
@@ -50,11 +58,14 @@ class DXGICapture
 	bool start();
 	void stop();
 	bool get_latest_frame(VideoFrame& frame);
+	bool set_capture_region(int x,int y,int width,int height);
+	bool set_capture_window(HWND window);
+	bool update_region_dynamically();
+
 	using FrameCallback = std::function<void(const VideoFrame&)>;
 	void set_frame_callback(FrameCallback callback) { frame_callback_=callback; }
 	
 	int  get_capture_width() const{ return texture_width_; }
-	int  get_capture_height() const{ return texture_height_; }
 
 	private:
 
@@ -64,8 +75,17 @@ class DXGICapture
 	bool handle_device_lost();
 	bool create_staging_texture(UINT width,UINT height);
 
-	CaptureConfig config_;
+	void calculate_target_resolution(int src_width, int src_height, int& target_width, int& target_height);
+    bool validate_region_parameters(D3D11_TEXTURE2D_DESC& desc);
+    bool process_region_capture(D3D11_MAPPED_SUBRESOURCE& mapped_resource, VideoFrame& frame, D3D11_TEXTURE2D_DESC& desc);
+    bool process_region_fast(D3D11_MAPPED_SUBRESOURCE& mapped_resource, VideoFrame& frame, D3D11_TEXTURE2D_DESC& desc);
+    bool process_region_balanced(D3D11_MAPPED_SUBRESOURCE& mapped_resource, VideoFrame& frame, D3D11_TEXTURE2D_DESC& desc);
+    bool process_region_high_quality(D3D11_MAPPED_SUBRESOURCE& mapped_resource, VideoFrame& frame, D3D11_TEXTURE2D_DESC& desc);
+    bool create_sws_context_for_region(int src_width, int src_height, int dst_width, int  dst_height);
+    bool process_fullscreen_capture(D3D11_MAPPED_SUBRESOURCE& mapped_resource, VideoFrame& frame, D3D11_TEXTURE2D_DESC& desc);
+
 	FrameCallback frame_callback_;
+	CaptureConfig config_;
 
 	//COM
 	ComPtr<IDXGIFactory2> dxgi_factory_;

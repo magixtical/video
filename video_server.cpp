@@ -81,6 +81,87 @@ int main() {
 #include <conio.h>
 #include <signal.h>
 
+void test_basic_region_capture() {
+    std::cout << "=== 测试基础区域捕获 ===" << std::endl;
+    
+    CaptureConfig config;
+    config.capture_full_screen = false;
+    config.capture_region = true;
+    config.capture_rect = {100, 100, 800, 600};  // 100x100到800x600区域
+    config.frame_rate = 30;
+    config.region_quality = 1;  // 快速模式
+    
+    try {
+        DXGICapture capture(config);
+        std::cout << "✅ DXGICapture对象创建成功" << std::endl;
+        
+        // 测试设置区域
+        if (capture.set_capture_region(200, 200, 400, 300)) {
+            std::cout << "✅ 区域设置成功" << std::endl;
+        } else {
+            std::cout << "❌ 区域设置失败" << std::endl;
+        }
+        
+    } catch (const std::exception& e) {
+        std::cout << "❌ 初始化失败: " << e.what() << std::endl;
+    }
+}
+
+void test_frame_capture() {
+    std::cout << "\n=== 测试帧捕获 ===" << std::endl;
+    
+    CaptureConfig config;
+    config.capture_full_screen = true;  // 先测试全屏捕获
+    config.frame_rate = 60;
+    
+    try {
+        DXGICapture capture(config);
+        
+        capture.set_frame_callback([](const VideoFrame& frame) {
+            std::cout << "📷 捕获到帧: " << frame.width << "x" << frame.height 
+                      << " 大小: " << frame.size << " bytes" << std::endl;
+        });
+        
+        if (capture.start()) {
+            std::cout << "✅ 捕获启动成功" << std::endl;
+            
+            // 捕获5秒
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            
+            capture.stop();
+            std::cout << "✅ 捕获停止" << std::endl;
+        } else {
+            std::cout << "❌ 捕获启动失败" << std::endl;
+        }
+        
+    } catch (const std::exception& e) {
+        std::cout << "❌ 测试失败: " << e.what() << std::endl;
+    }
+}
+
+void test_region_quality_modes() {
+    std::cout << "\n=== 测试不同质量模式 ===" << std::endl;
+    
+    int quality_modes[] = {0, 1, 2};  // 快速、均衡、高质量
+    
+    for (int quality : quality_modes) {
+        std::cout << "测试质量模式: " << quality << std::endl;
+        
+        CaptureConfig config;
+        config.capture_region = true;
+        config.capture_rect = {100, 100, 500, 400};
+        config.region_quality = quality;
+        config.frame_rate = 30;
+        
+        try {
+            DXGICapture capture(config);
+            std::cout << "✅ 质量模式 " << quality << " 初始化成功" << std::endl;
+        } catch (const std::exception& e) {
+            std::cout << "❌ 质量模式 " << quality << " 初始化失败: " << e.what() << std::endl;
+        }
+    }
+}
+
 std::unique_ptr<ScreenRecorder> recorder;
 
 void signalHandler(int signal) {
@@ -91,7 +172,7 @@ void signalHandler(int signal) {
     exit(0);
 }
 
-int main() {
+int64_t main_test(){
     signal(SIGINT, signalHandler);
     signal(SIGTERM, signalHandler);
     
@@ -99,24 +180,24 @@ int main() {
         RecordConfig config;
         
         // 捕获配置
-        config.capture_config.capture_full_screen = false;
-        config.capture_config.capture_region = true;
-        config.capture_config.capture_rect = {160, 120, 800, 600};  // 录制区域
-        config.capture_config.region_width = 640;  // 区域宽度
-        config.capture_config.region_height = 480;  // 区域高度
+        config.capture_config.capture_full_screen = true;
+        config.capture_config.capture_region = false;
+        //config.capture_config.capture_rect = {0, 0, 1920, 1080};  // 录制区域
+        //config.capture_config.region_width = 1920;  // 区域宽度
+        //config.capture_config.region_height = 1080;  // 区域高度
 
         config.capture_config.maintain_aspect_ratio = true;
         
         // 编码配置
-        config.encoder_config.width = 640;
-        config.encoder_config.height = 480;
-        config.encoder_config.frame_rate = 30;
-        config.encoder_config.video_bitrate = 1000000;  // 1Mbps
+        config.encoder_config.width = 2560;
+        config.encoder_config.height = 1600;
+        config.encoder_config.frame_rate = 60;
+        config.encoder_config.video_bitrate = 8000000;  // 1Mbps
         config.encoder_config.video_codec_name = "libx264";
-        config.encoder_config.preset = "veryfast";
+        config.encoder_config.preset = "medium";
         config.encoder_config.tune = "zerolatency";
         config.encoder_config.max_b_frames = 0;  // FLV 通常不支持 B-frames
-        config.encoder_config.gop_size = 10;  // 
+        config.encoder_config.gop_size = 60;  // 
         config.encoder_config.pixel_format = AV_PIX_FMT_YUV420P;  // FLV 标准格式
         config.encoder_config.audio_bitrate = 0; 
         config.encoder_config.sample_rate = 0;
@@ -185,4 +266,7 @@ int main() {
     }
     
     return 0;
+}
+int main() {
+    main_test();
 }

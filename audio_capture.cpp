@@ -5,6 +5,27 @@
 #pragma comment(lib,"avrt.lib")
 #pragma comment(lib,"ole32.lib")
 
+namespace{
+    void convert_pcm16_to_float(const BYTE* src,float* dst,size_t num_samples){
+        const int16_t* pcm_data=reinterpret_cast<const int16_t*>(src);
+        for(size_t i=0;i<num_samples;i++){
+            dst[i]=static_cast<float>(pcm_data[i])/32768.0f;
+        }
+    }
+
+    void convert_pcm32_to_float(const BYTE* src,float* dst,size_t num_samples){
+        const int32_t* pcm_data=reinterpret_cast<const int32_t*>(src);
+        for(size_t i=0;i<num_samples;i++){
+            dst[i]=static_cast<float>(pcm_data[i])/2147483648.0f;
+        }
+    }
+
+    void copy_float_data(const BYTE* src,float* dst,size_t num_samples){
+        const float* float_dat=reinterpret_cast<const float*>(src);
+        std::memcpy(dst,float_dat,num_samples*sizeof(float));
+    }
+}
+
 AudioCapture::AudioCapture()=default;
 
 AudioCapture::~AudioCapture(){
@@ -75,10 +96,8 @@ bool AudioCapture::setupAudioClient() {
         return false;
     }
 
-    std::cout << "Audio mix format: " << mix_format->nSamplesPerSec << "Hz, " 
-              << mix_format->nChannels << " channels, " 
-              << mix_format->wBitsPerSample << " bits, format tag: 0x" 
-              << std::hex << mix_format->wFormatTag << std::dec << std::endl;
+    format_tag_=mix_format->wFormatTag;
+    bits_per_sample_=mix_format->wBitsPerSample;
 
     hr = audio_client_->Initialize(AUDCLNT_SHAREMODE_SHARED,
         AUDCLNT_STREAMFLAGS_LOOPBACK,
@@ -102,9 +121,6 @@ bool AudioCapture::setupAudioClient() {
     sample_rate_ = mix_format->nSamplesPerSec;
     channels_ = mix_format->nChannels;
     bytes_per_sample_ = mix_format->wBitsPerSample / 8;
-
-    std::cout << "Audio capture initialized successfully: " << sample_rate_ << "Hz, "
-        << channels_ << " channels, " << bytes_per_sample_ << " bytes per sample" << std::endl;
 
     CoTaskMemFree(mix_format);
     return true;
@@ -159,7 +175,7 @@ void AudioCapture::captureThread() {
     audio_client_->GetBufferSize(&buffer_size);
     std::cout << "Audio capture thread started, buffer size: " << buffer_size << std::endl;
     
-    int capture_count = 0;
+    int64_t cumulative_samples = 0;
 
     while (capturing_) {
         UINT32 next_packet_size;
@@ -187,34 +203,53 @@ void AudioCapture::captureThread() {
         }
         
         if (num_frames > 0) {
-            // 创建音频包（简化版）
             AudioPacket packet;
             packet.samples = num_frames;
+            packet.sample_rate = sample_rate_;
+            packet.channels=channels_;
+            packet.format_tag=format_tag_;
+            packet.bits_per_sample=bits_per_sample_;
+            packet.timestamp=TimeManager::instance().getCurrentPts();
+            packet.cumulative_samples=cumulative_samples;
+            packet.is_silent=(flags&AUDCLNT_BUFFERFLAGS_SILENT)!=0;
+
+            cumulative_samples+=num_frames;
             
-            // 分配数据：float格式，交错立体声（L, R, L, R, ...）
-            size_t data_size = num_frames * channels_ * sizeof(float);
-            packet.data.resize(data_size);
+            size_t total_samples=num_frames*channels_;
+            packet.data.resize(total_samples);
             
-            // 直接复制数据（WASAPI已经处理静音为0）
-            memcpy(packet.data.data(), data, data_size);
+            if((flags&AUDCLNT_BUFFERFLAGS_SILENT)!=0){
+                std::fill(packet.data.begin(),packet.data.end(),0.0f);
+            }else{
+                switch(format_tag_){
+                    case WAVE_FORMAT_IEEE_FLOAT:
+                        copy_float_data(data,packet.data.data(),total_samples);
+                        break;
+                    case WAVE_FORMAT_PCM:
+                        if(bits_per_sample_==16){
+                            convert_pcm16_to_float(data,packet.data.data(),total_samples);
+                        }else if(bits_per_sample_==32){
+                            convert_pcm32_to_float(data,packet.data.data(),total_samples);
+                        }else{
+                            std::cerr<<"Unsupported PCM format: "<<bits_per_sample_<<std::endl;
+                            std::fill(packet.data.begin(),packet.data.end(),0.0f);
+                        }
+                        break;
+                    default:
+                        std::cerr<<"Unsupported audio format:"<<std::hex<<format_tag_<<std::endl;
+                        std::fill(packet.data.begin(),packet.data.end(),0.0f);
+                        break;
+                }
+            }
             
             // 调试信息（包括静音标志）
             if ((flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0) {
                 std::cout << "Audio captured [SILENCE]: " << num_frames << " frames" << std::endl;
-            } else {
-                if (capture_count % 50 == 0) {  // 减少日志输出
-                    std::cout << "Audio captured: " << num_frames << " frames" << std::endl;
-                }
-            }
+            } 
             
             // 调用回调
             if (audio_callback_) {
                 audio_callback_(packet);
-            }
-            
-            capture_count++;
-            if (capture_count % 100 == 0) {
-                std::cout << "Audio capture statistics: " << capture_count << " packets processed" << std::endl;
             }
         }
         
@@ -224,6 +259,4 @@ void AudioCapture::captureThread() {
     if (task_handle) {
         AvRevertMmThreadCharacteristics(task_handle);
     }
-    
-    std::cout << "Audio capture thread stopped, total packets: " << capture_count << std::endl;
 }

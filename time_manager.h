@@ -32,8 +32,8 @@ public:
     // 时间戳同步
     void updateLastVideoPts(int64_t pts);
     void updateLastAudioPts(int64_t pts);
-    int64_t getSyncedVideoPts(int frame_count, int frame_rate) const;
-    int64_t getSyncedAudioPts(int64_t samples_encoded, int sample_rate) const;
+    int64_t getSyncedVideoPts(int frame_count, int frame_rate) ;
+    int64_t getSyncedAudioPts(int64_t samples_encoded, int sample_rate) ;
     
     // 帧间隔计算
     static int64_t calculateFrameDuration(int frame_rate);  // 返回微秒

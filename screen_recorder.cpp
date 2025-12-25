@@ -396,13 +396,11 @@ void ScreenRecorder::audio_encode_loop(){
     const int bytes_per_frame = samples_per_frame * 2 * sizeof(float);
     const int frame_duration_ms = (samples_per_frame * 1000) / audio_codec_ctx->sample_rate;
 
-    std::cout << "Audio encode config:" << std::endl;
-    std::cout << "  Samples per frame: " << samples_per_frame << std::endl;
-    std::cout << "  Bytes per frame: " << bytes_per_frame << std::endl;
-    std::cout << "  Frame duration: " << frame_duration_ms << "ms" << std::endl;
+    int64_t start_time_us=TimeManager::instance().getCurrentPts();
+    int64_t cumulative_samples_encoded=0;
 
     while(running_){
-        std::vector<uint8_t> audio_data;
+        AudioCapture::AudioPacket audio_packet;
         bool has_data = false;
         
         {
@@ -413,7 +411,7 @@ void ScreenRecorder::audio_encode_loop(){
                 if (!running_)
                     break;
                 if (!audio_queue_.empty()) {
-                    audio_data = audio_queue_.front();
+                    audio_packet = audio_queue_.front();
                     audio_queue_.pop_front();
                     has_data = true;
                 }
@@ -423,32 +421,34 @@ void ScreenRecorder::audio_encode_loop(){
         if (!running_)
             break;
 
-        if (has_data && !audio_data.empty()) {
-            audio_buffer_.insert(audio_buffer_.end(), audio_data.begin(), audio_data.end());
-            std::cout << "Audio buffer size after adding data: " << audio_buffer_.size() 
-                      << " (needs " << bytes_per_frame << " for a frame)" << std::endl;
+        if(has_data){
+            if(audio_packet.is_silent){
+                cumulative_samples_encoded += samples_per_frame;
+                continue;
+            }
+            const uint8_t* audio_data=reinterpret_cast<const uint8_t*>(audio_packet.data.data());
+            size_t data_size=audio_packet.data.size()*sizeof(float);
+            audio_buffer_.insert(audio_buffer_.end(), audio_data, audio_data + data_size);
         }
 
         // 编码完整的音频帧
         while (audio_buffer_.size() >= bytes_per_frame && audio_frame_) {
-            std::cout << "Audio encode: buffer has enough data for encoding ("
-                      << audio_buffer_.size() << " >= " << bytes_per_frame << ")" << std::endl;
             
             if (convertToAudioFrame(audio_buffer_.data(), bytes_per_frame, audio_frame_)) {
-                std::cout << "Audio encode: converted to frame, samples: " << audio_frame_->nb_samples << std::endl;
-                
-                if (audio_encoder_->encodeAudioFrame(audio_frame_)) {
-                    std::cout << "Audio encode: successfully encoded frame" << std::endl;
-                } else {
-                    std::cerr << "Audio encode: failed to encode frame" << std::endl;
+                int64_t audio_pts=start_time_us+TimeManager::instance().getAudioPts(cumulative_samples_encoded,audio_codec_ctx->sample_rate);
+                audio_frame_->pts = audio_pts;
+                cumulative_samples_encoded+=samples_per_frame;
+                if(audio_encoder_->encodeAudioFrame(audio_frame_)){
+                    std::cout<<"Successfully encoded audio frame, pts: "<<audio_pts<<std::endl;
+                }else{
+                    std::cerr << "Failed to encode audio frame" << std::endl;
                 }
-            } else {
-                std::cerr << "Audio encode: failed to convert to audio frame" << std::endl;
+            }else{
+                std::cerr << "Failed to convert audio data to frame" << std::endl;
             }
 
             // 移除已处理的数据
             audio_buffer_.erase(audio_buffer_.begin(), audio_buffer_.begin() + bytes_per_frame);
-            std::cout << "Audio buffer after encoding: " << audio_buffer_.size() << " bytes" << std::endl;
         }
     }
 
@@ -504,13 +504,13 @@ bool ScreenRecorder::convertToAVFrame(const VideoFrame& src, AVFrame* dst) {
             src.width / 2);
     }
 
-    dst->pts = frame_count_++;
+    dst->pts = TimeManager::instance().convertTimebase(src.timestamp,encoder_->getCodecContext()->time_base);
     std::cout << "Frame converted successfully, pts: " << dst->pts << std::endl;
-
     return true;
 }
+
 /*
-bool ScreenRecorder::convertToAudioFrame(const uint8_t* audio_data,size_t data_size,AVFrame* frame){
+bool ScreenRecorder::convertToAudioFrame(const float* audio_data,size_t data_size,AVFrame* frame){
     if (!frame || !audio_data || data_size == 0) {
         std::cerr << "convertToAudioFrame: invalid parameters" << std::endl;
         return false;

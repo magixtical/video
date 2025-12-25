@@ -34,21 +34,18 @@ bool Encoder::initialize(const EncoderConfig& config){
     codec_ctx_->max_b_frames=config_.max_b_frames;
 
     if(codec_->id==AV_CODEC_ID_H264){
-        // 关键修复：使用用户配置的预设和调优参数
-        if (!config_.preset.empty()) {
-            av_opt_set(codec_ctx_->priv_data, "preset", config_.preset.c_str(), 0);
-        }
-        if (!config_.tune.empty()) {
-            av_opt_set(codec_ctx_->priv_data, "tune", config_.tune.c_str(), 0);
-        }
+        av_opt_set(codec_ctx_->priv_data, "preset", config_.preset.c_str(), 0);
+        av_opt_set(codec_ctx_->priv_data, "tune", config_.tune.c_str(), 0);
         
         // 添加RTMP/FLV兼容性参数
         av_opt_set(codec_ctx_->priv_data, "profile", "baseline", 0);  // FLV兼容的profile
-        av_opt_set(codec_ctx_->priv_data, "level", "3.1", 0);         // 设置合适的level
+        av_opt_set(codec_ctx_->priv_data, "level", "4.2", 0);         // 设置合适的level
         av_opt_set_int(codec_ctx_->priv_data, "forced-idr", 1, 0);    // 强制IDR帧
         
         // 添加更多FLV兼容性参数
-        av_opt_set(codec_ctx_->priv_data, "x264-params", "cabac=0:ref=1:deblock=1:analyse=0:me=dia:subme=0:psy=0:mixed-refs=0:weightb=0:8x8dct=0:trellis=0", 0);
+        av_opt_set(codec_ctx_->priv_data, 
+            "x264-params", 
+            "cabac=0:ref=1:deblock=1:analyse=0:me=dia:subme=0:psy=0:mixed-refs=0:weightb=0:8x8dct=0:trellis=0", 0);
         
         // 设置编码器标志
         codec_ctx_->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
@@ -154,10 +151,11 @@ bool Encoder::encodeFrame(AVFrame* frame) {
     if (!codec_ctx_ || !frame)
         return false;
     
-    // 使用TimeManager计算视频PTS
-    int64_t pts_us = TimeManager::instance().getVideoPts(frame_count_, config_.frame_rate);
-    int64_t pts = TimeManager::convertTimebase(pts_us, codec_ctx_->time_base);
-    frame->pts = pts;
+    int64_t pts_us = frame->pts;  
+    if (frame->pts == AV_NOPTS_VALUE) {
+        pts_us = TimeManager::instance().getVideoPts(frame_count_, config_.frame_rate);
+        frame->pts = TimeManager::convertTimebase(pts_us, codec_ctx_->time_base);
+    }
     
     frame_count_++;
 
@@ -226,8 +224,13 @@ bool Encoder::encodeAudioFrame(AVFrame* frame) {
     if(!audio_codec_ctx_ || !frame)
         return false;
     
-    // 使用TimeManager计算音频PTS
-    int64_t pts_us = TimeManager::instance().getAudioPts(audio_samples_encoded_, config_.sample_rate);
+    int64_t pts_us;
+    if (frame->pts != AV_NOPTS_VALUE) {
+        pts_us = TimeManager::convertFromTimebase(frame->pts, audio_codec_ctx_->time_base);
+    } else {
+        pts_us = TimeManager::instance().getAudioPts(audio_samples_encoded_, config_.sample_rate);
+    }
+    
     int64_t pts = TimeManager::convertTimebase(pts_us, audio_codec_ctx_->time_base);
     frame->pts = pts;
     

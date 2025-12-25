@@ -100,7 +100,7 @@ void OutputManager::setEncoder(std::shared_ptr<Encoder> encoder){
         }
     }
 }
-/*
+
 void OutputManager::setAudioEncoder(std::shared_ptr<Encoder> audio_encoder){
     std::cout << "=== OutputManager::setAudioEncoder ===" << std::endl;
     std::cout << "Current audio_encoder_: " << audio_encoder_.get() << std::endl;
@@ -132,7 +132,7 @@ void OutputManager::setAudioEncoder(std::shared_ptr<Encoder> audio_encoder){
 }
 
 
-*/
+
 bool OutputManager::start() {
     if (!encoder_) {
         std::cerr << "Encoder not set" << std::endl;
@@ -530,7 +530,7 @@ void OutputManager::onEncodedPacket(AVPacket* packet) {
         }
     }
 }
-/*
+
 void OutputManager::onAudioEncodedPacket(AVPacket* packet) {
     if(!packet || packet->size <= 0){
         std::cout << "OutputManager: received empty audio packet, ignoring" << std::endl;
@@ -571,7 +571,7 @@ void OutputManager::onAudioEncodedPacket(AVPacket* packet) {
     }
 }
 
-*/
+
 
 bool OutputManager::writePacket(AVPacket* packet, AVFormatContext* fmt_ctx, AVStream* stream) {
     if (!fmt_ctx || !stream || !packet || packet->size <= 0) {
@@ -625,7 +625,7 @@ bool OutputManager::writePacket(AVPacket* packet, AVFormatContext* fmt_ctx, AVSt
 
     return true;
 }
-/*
+
 bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,AVStream* stream) {
     if(!fmt_ctx || !stream || !packet || packet->size <= 0) {
         std::cerr << "writeAudioPacket: invalid parameters" << std::endl;
@@ -699,7 +699,7 @@ bool OutputManager::writeAudioPacket(AVPacket* packet,AVFormatContext* fmt_ctx,A
     std::cout << "✓ Successfully wrote audio packet" << std::endl;
     return true;
 }
-*/
+
 
 void OutputManager::reset() {
     stop();

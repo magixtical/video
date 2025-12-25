@@ -88,7 +88,7 @@ void TimeManager::updateLastAudioPts(int64_t pts) {
     }
 }
 
-int64_t TimeManager::getSyncedVideoPts(int frame_count, int frame_rate) const {
+int64_t TimeManager::getSyncedVideoPts(int frame_count, int frame_rate) {
     if (!is_recording_) {
         return 0;
     }
@@ -106,22 +106,28 @@ int64_t TimeManager::getSyncedVideoPts(int frame_count, int frame_rate) const {
     return ideal_pts;
 }
 
-int64_t TimeManager::getSyncedAudioPts(int64_t samples_encoded, int sample_rate) const {
-    if (!is_recording_) {
+int64_t TimeManager::getSyncedAudioPts(int64_t samples_encoded, int sample_rate)  {
+    if(!is_recording_ || sample_rate == 0) {
         return 0;
     }
     
-    // 计算基于采样数的理想时间戳
-    int64_t ideal_pts = getAudioPts(samples_encoded, sample_rate);
+    int64_t current_time_us = getCurrentPts();
     
-    std::lock_guard<std::mutex> lock(sync_mutex_);
+    int64_t ideal_time_us = (samples_encoded * 1000000LL) / sample_rate;
     
-    // 如果理想时间戳落后太多，使用最后记录的时间戳
-    if (ideal_pts < last_audio_pts_) {
+    const int64_t SYNC_THRESHOLD_US = 50000; // 50ms阈值
+    
+    if (std::abs(current_time_us - ideal_time_us) > SYNC_THRESHOLD_US) {
+        std::lock_guard<std::mutex> lock(sync_mutex_);
+        if (current_time_us > last_audio_pts_) {
+            last_audio_pts_ = current_time_us;
+        } else {
+            last_audio_pts_ += (1000000LL / sample_rate) * (samples_encoded / 1024);
+        }
         return last_audio_pts_;
     }
     
-    return ideal_pts;
+    return ideal_time_us;
 }
 
 int64_t TimeManager::calculateFrameDuration(int frame_rate) {

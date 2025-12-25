@@ -127,8 +127,19 @@ bool DXGICapture::create_staging_texture(UINT width, UINT height) {
 		std::cerr<<"Failed to create staging texture"<<std::endl;
 		return false;
 	}
-	int src_width = config_.capture_region ? config_.region_width : width;
-    int src_height = config_.capture_region ? config_.region_height : height;
+	int src_width = width;
+    int src_height = height;
+    
+    if (config_.capture_region) {
+        src_width = config_.region_width > 0 ? config_.region_width : width;
+        src_height = config_.region_height > 0 ? config_.region_height : height;
+        
+        if (src_width <= 0 || src_height <= 0) {
+            std::cerr << "Invalid region dimensions: " << src_width << "x" << src_height << std::endl;
+            return false;
+        }
+    }
+
     int target_width = config_.target_width > 0 ? config_.target_width : src_width;
     int target_height = config_.target_height > 0 ? config_.target_height : src_height;
 
@@ -230,9 +241,7 @@ void DXGICapture::capture_thread() {
 		//转化为YUV420P并缓存
 		VideoFrame frame;
 		if (convert_texture_to_yuv(texture.Get(),frame)) {
-			frame.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-				std::chrono::system_clock::now().time_since_epoch()
-			).count();
+			frame.timestamp = TimeManager::instance().getCurrentPts();
 
 			std::lock_guard<std::mutex> lock(frame_mutex_);
 			if (frame_callback_) {
@@ -250,7 +259,7 @@ void DXGICapture::capture_thread() {
 		}
 	}
 }
-
+/*
 bool DXGICapture::convert_texture_to_yuv(ID3D11Texture2D* texture, VideoFrame& frame) {
 	if (!texture || !staging_texture_)
 		return false;
@@ -376,6 +385,319 @@ bool DXGICapture::convert_texture_to_yuv(ID3D11Texture2D* texture, VideoFrame& f
     }
 
     return true;
+}*/
+bool DXGICapture::convert_texture_to_yuv(ID3D11Texture2D* texture, VideoFrame& frame){
+	if (!texture || !staging_texture_)
+		return false;
+	
+	D3D11_TEXTURE2D_DESC desc;
+	texture->GetDesc(&desc);
+	int target_width=0,target_height=0;
+	calculate_target_resolution(desc.Width,desc.Height,target_width,target_height);
+	frame.width=target_width;
+	frame.height=target_height;
+	frame.size=target_width*target_height*3/2;
+	frame.data.resize(frame.size);
+	d3d_context_->CopyResource(staging_texture_.Get(), texture);
+
+	D3D11_MAPPED_SUBRESOURCE mapped_resource;
+	HRESULT hr = d3d_context_->Map(staging_texture_.Get(), 0, D3D11_MAP_READ, 0, &mapped_resource);
+	if (FAILED(hr)) {
+		return false;
+	}
+
+	if(config_.capture_region){
+		return process_region_capture(mapped_resource,frame,desc);
+	}else{
+		return process_fullscreen_capture(mapped_resource,frame,desc);
+	}
+}
+void DXGICapture::calculate_target_resolution(int src_width,int src_height,int& target_width,int& target_height){
+	if(config_.capture_region){
+		target_width=config_.region_width;
+		target_height=config_.region_height;
+		
+		if(config_.capture_padding>0){
+			target_width+=config_.capture_padding*2;
+			target_height+=config_.capture_padding*2;
+		}
+	}else{
+		target_width=config_.target_width>0?config_.target_width:src_width;
+		target_height=config_.target_height>0?config_.target_height:src_height;
+	}
+
+	if(config_.maintain_aspect_ratio&&config_.target_width>0&&config_.target_height>0){
+		float src_aspect=(float)src_width/src_height;
+		float dst_aspect=(float)config_.target_width/config_.target_height;
+		if(src_aspect>dst_aspect){
+			target_height=(int)(config_.target_width/src_aspect);
+		}else{
+			target_width=(int)(config_.target_height*src_aspect);
+		}
+	}
+}
+
+bool DXGICapture::process_region_capture(D3D11_MAPPED_SUBRESOURCE& mapped_resource,VideoFrame& frame,D3D11_TEXTURE2D_DESC& desc){
+	if(!validate_region_parameters(desc)){
+		d3d_context_->Unmap(staging_texture_.Get(), 0);
+		return false;
+	}
+	switch(config_.region_quality){
+		case 0:
+			return process_region_fast(mapped_resource,frame,desc);
+		case 1:
+			return process_region_balanced(mapped_resource,frame,desc);
+		case 2:
+			return process_region_high_quality(mapped_resource,frame,desc);
+		default:
+			return process_region_balanced(mapped_resource,frame,desc);
+	}
+}
+
+bool DXGICapture::validate_region_parameters(D3D11_TEXTURE2D_DESC& desc){
+	RECT rect=config_.capture_rect;
+	if(rect.left<0||rect.top<0||rect.right>(int)desc.Width||rect.bottom>(int)desc.Height){
+		std::cerr<<"Invalid region parameters: "<<rect.left<<","<<rect.top<<","<<rect.right<<","<<rect.bottom<<std::endl;
+		return false;
+	}
+	if(rect.right<=rect.left||rect.bottom<=rect.top){
+		std::cerr<<"Invalid capture region dimensions"<<std::endl;
+		return false;
+	}
+	return true;
+}
+bool DXGICapture::process_region_fast(D3D11_MAPPED_SUBRESOURCE& mapped_resource,VideoFrame& frame,D3D11_TEXTURE2D_DESC& desc){
+	RECT rect=config_.capture_rect;
+	int region_width=rect.right-rect.left;
+	int region_height=rect.bottom-rect.top;
+
+	if(config_.capture_padding>0){
+		rect.left=rect.left-config_.capture_padding>0?rect.left-config_.capture_padding:0;
+		rect.top=rect.top-config_.capture_padding>0?rect.top-config_.capture_padding:0;
+		region_width=desc.Width>rect.right+config_.capture_padding?desc.Width:rect.right+config_.capture_padding-rect.left;
+		region_height=desc.Height>rect.bottom+config_.capture_padding?desc.Height:rect.bottom+config_.capture_padding-rect.top;
+	}
+
+	const uint8_t* src_data=static_cast<const uint8_t*>(mapped_resource.pData);
+	uint8_t* y_plane=frame.data.data();
+	uint8_t* u_plane=y_plane+frame.width*frame.height;
+	uint8_t* v_plane=u_plane+frame.width/2*frame.height/2;
+	for (int y=rect.top;y<rect.bottom;y++){
+		for(int x=rect.left;x<rect.right;x++){
+			int dst_y=y-rect.top;
+			int dst_x=x-rect.left;
+			const uint8_t* pixel = src_data + (y * mapped_resource.RowPitch + x * 4);
+			uint8_t b = pixel[0];
+			uint8_t g = pixel[1];
+			uint8_t r = pixel[2];
+
+			// 计算Y分量
+			y_plane[dst_y * frame.width + dst_x] = static_cast<uint8_t>(
+				(0.299 * r + 0.587 * g + 0.114 * b)
+			);
+
+			// 下采样UV分量
+			if ((dst_y % 2 == 0) && (dst_x % 2 == 0)) {
+				int uv_index = (dst_y / 2) * (frame.width / 2) + (dst_x / 2);
+				u_plane[uv_index] = static_cast<uint8_t>(
+					(-0.169 * r - 0.331 * g + 0.5 * b) + 128
+				);
+				v_plane[uv_index] = static_cast<uint8_t>(
+					(0.5 * r - 0.419 * g - 0.081 * b) + 128
+				);
+			}
+		}
+	}
+	d3d_context_->Unmap(staging_texture_.Get(), 0);
+	return true;
+}
+
+bool DXGICapture::process_region_balanced(D3D11_MAPPED_SUBRESOURCE& mapped_resource, VideoFrame& frame, D3D11_TEXTURE2D_DESC& desc){
+	
+	RECT rect = config_.capture_rect;
+    int src_width = rect.right - rect.left;
+    int src_height = rect.bottom - rect.top;
+	
+	if(!sws_context_){
+		if(!create_sws_context_for_region(src_width,src_height,frame.width,frame.height)){
+			d3d_context_->Unmap(staging_texture_.Get(), 0);
+			return false;
+		}
+	}
+	
+	uint8_t* src_data[4]={static_cast<uint8_t*>(mapped_resource.pData),nullptr,nullptr,nullptr};
+	int src_linesize[4]={static_cast<int>(mapped_resource.RowPitch),0,0,0};
+
+	src_data[0]+=rect.top*mapped_resource.RowPitch+rect.left*4;
+
+	uint8_t* y_plane=frame.data.data();
+	uint8_t* u_plane=y_plane+frame.width*frame.height;
+	uint8_t* v_plane=u_plane+frame.width/2*frame.height/2;
+	uint8_t* dst_data[4]={y_plane,u_plane,v_plane,nullptr};
+	int dst_linesize[4]={frame.width,frame.width/2,frame.width/2,0};
+
+	int converted_lines=sws_scale(
+		sws_context_,
+		src_data,
+		src_linesize,
+		0,
+		src_height,
+		dst_data,
+		dst_linesize
+	);
+	d3d_context_->Unmap(staging_texture_.Get(), 0);
+	return converted_lines==frame.height;
+}
+
+bool DXGICapture::process_region_high_quality(D3D11_MAPPED_SUBRESOURCE& mapped_resource, VideoFrame& frame, D3D11_TEXTURE2D_DESC& desc) {
+    // 高质量模式暂时使用平衡模式，后续可扩展为硬件加速
+    return process_region_balanced(mapped_resource, frame, desc);
+}
+
+bool DXGICapture::create_sws_context_for_region(int src_width, int src_height, int dst_width, int dst_height) {
+    if (sws_context_) {
+        sws_freeContext(sws_context_);
+        sws_context_ = nullptr;
+    }
+
+    int flags = SWS_BILINEAR;
+    switch (config_.region_quality) {
+        case 1: flags = SWS_BICUBIC; break;  
+        case 2: flags = SWS_LANCZOS; break;  
+    }
+
+    sws_context_ = sws_getContext(
+        src_width, src_height, AV_PIX_FMT_BGRA,
+        dst_width, dst_height, AV_PIX_FMT_YUV420P,
+        flags, nullptr, nullptr, nullptr
+    );
+
+    return sws_context_ != nullptr;
+}
+
+bool DXGICapture::process_fullscreen_capture(D3D11_MAPPED_SUBRESOURCE& mapped_resource, VideoFrame& frame, D3D11_TEXTURE2D_DESC& desc) {
+    if(sws_context_){
+		uint8_t* src_data[4]={static_cast<uint8_t*>(mapped_resource.pData),nullptr,nullptr,nullptr};
+		int src_linesize[4]={static_cast<int>(mapped_resource.RowPitch),0,0,0};
+
+		uint8_t* y_plane=frame.data.data();
+		uint8_t* u_plane=y_plane+frame.width*frame.height;
+		uint8_t* v_polane=u_plane+frame.width/2*frame.height/2;
+		uint8_t* dst_data[4]={y_plane,u_plane,v_polane,nullptr};
+		int dst_linesize[4]={frame.width,frame.width/2,frame.width/2,0};
+		int converted_lines=sws_scale(
+			sws_context_,
+			src_data,
+			src_linesize,
+			0,
+			desc.Height,
+			dst_data,
+			dst_linesize
+		);
+		d3d_context_->Unmap(staging_texture_.Get(), 0);
+		return converted_lines==frame.height;
+	}else{
+		const uint8_t* src_data = static_cast<const uint8_t*>(mapped_resource.pData);
+        uint8_t* y_plane = frame.data.data();
+        uint8_t* u_plane = y_plane + frame.width * frame.height;
+        uint8_t* v_plane = u_plane + (frame.width / 2) * (frame.height / 2);
+
+        for (int y = 0; y < frame.height; ++y) {
+            for (int x = 0; x < frame.width; ++x) {
+                const uint8_t* pixel = src_data + (y * mapped_resource.RowPitch + x * 4);
+                uint8_t b = pixel[0];
+                uint8_t g = pixel[1];
+                uint8_t r = pixel[2];
+
+                y_plane[y * frame.width + x] = static_cast<uint8_t>(
+                    (0.299 * r + 0.587 * g + 0.114 * b)
+                );
+
+                if ((y % 2 == 0) && (x % 2 == 0)) {
+                    int uv_index = (y / 2) * (frame.width / 2) + (x / 2);
+                    u_plane[uv_index] = static_cast<uint8_t>(
+                        (-0.169 * r - 0.331 * g + 0.5 * b) + 128
+                    );
+                    v_plane[uv_index] = static_cast<uint8_t>(
+                        (0.5 * r - 0.419 * g - 0.081 * b) + 128
+                    );
+                }
+            }
+        }
+
+        d3d_context_->Unmap(staging_texture_.Get(), 0);
+        return true;
+	}
+}
+
+bool DXGICapture::set_capture_region(int x, int y, int width, int height) {
+    if (width <= 0 || height <= 0) {
+        std::cerr << "Invalid region dimensions: " << width << "x" << height << std::endl;
+        return false;
+    }
+
+    config_.capture_rect = { x, y, x + width, y + height };
+    config_.region_width = width;
+    config_.region_height = height;
+    config_.capture_region = true;
+
+    // 重新初始化缩放上下文
+    if (sws_context_) {
+        sws_freeContext(sws_context_);
+        sws_context_ = nullptr;
+    }
+
+    return true;
+}
+
+bool DXGICapture::set_capture_window(HWND window) {
+    if (!IsWindow(window)) {
+        std::cerr << "Invalid window handle" << std::endl;
+        return false;
+    }
+
+    config_.target_window = window;
+    
+    // 获取窗口位置和大小
+    RECT window_rect;
+    if (GetWindowRect(window, &window_rect)) {
+        return set_capture_region(
+            window_rect.left, window_rect.top,
+            window_rect.right - window_rect.left,
+            window_rect.bottom - window_rect.top
+        );
+    }
+
+    return false;
+}
+
+// 动态区域调整（用于窗口移动等情况）
+bool DXGICapture::update_region_dynamically() {
+    if (!config_.dynamic_region_adjustment || !config_.target_window) {
+        return true;
+    }
+
+    RECT current_rect;
+    if (GetWindowRect(config_.target_window, &current_rect)) {
+        if (memcmp(&current_rect, &config_.capture_rect, sizeof(RECT)) != 0) {
+            std::cout << "Window moved, updating capture region..." << std::endl;
+            return set_capture_region(
+                current_rect.left, current_rect.top,
+                current_rect.right - current_rect.left,
+                current_rect.bottom - current_rect.top
+            );
+        }
+    }
+
+    return true;
+}
+
+bool DXGICapture::get_latest_frame(VideoFrame& frame) {
+	std::scoped_lock<std::mutex> lock(frame_mutex_);
+	if (latest_frame_.data.empty())
+		return false;
+	frame = latest_frame_;
+	return true;
 }
 
 bool DXGICapture::handle_device_lost() {
@@ -393,12 +715,4 @@ bool DXGICapture::handle_device_lost() {
 	bool success = init();
 	device_lost_ = !success;
 	return success;
-}
-
-bool DXGICapture::get_latest_frame(VideoFrame& frame) {
-	std::scoped_lock<std::mutex> lock(frame_mutex_);
-	if (latest_frame_.data.empty())
-		return false;
-	frame = latest_frame_;
-	return true;
 }
